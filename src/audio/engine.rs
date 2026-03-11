@@ -10,7 +10,7 @@ use crate::audio::drum_voice::{create_drum_voices, DrumVoiceDsp};
 use crate::audio::effects::{DelayEffect, GlueCompressor, ReverbEffect, TubeSaturator};
 use crate::audio::mixer::{effective_mute, soft_clip};
 use crate::audio::synth_voice::SynthVoice;
-use crate::messages::{AudioToUi, UiToAudio};
+use crate::messages::{AudioToUi, SynthId, UiToAudio};
 use crate::params::EffectParams;
 use crate::sequencer::drum_pattern::{DrumPattern, DrumTrackId, NUM_DRUM_TRACKS};
 use crate::sequencer::synth_pattern::{SynthPattern, LFO_DEST_FIELDS, lfo_division_multiplier};
@@ -18,7 +18,7 @@ use crate::sequencer::transport::{PlayState, Transport};
 
 /// Tempo-synced global LFO shared across synth voices.
 /// Supports sine, triangle, saw (up/down), square, and exponential decay waveforms.
-struct Lfo {
+pub(crate) struct Lfo {
     phase: f64,
 }
 
@@ -75,6 +75,43 @@ impl Lfo {
     }
 }
 
+/// Bundles all per-synth state (voice, pattern, effects, LFO).
+pub struct SynthInstance {
+    pub pattern: SynthPattern,
+    pub voice: SynthVoice,
+    pub gate_samples: u32,
+    pub note_end_step: Option<usize>,
+    pub lfo: Lfo,
+    pub saturator: TubeSaturator,
+    pub reverb: ReverbEffect,
+    pub delay: DelayEffect,
+    pub reverb_amount: f32,
+    pub reverb_damping: f32,
+    pub delay_time: f32,
+    pub delay_feedback: f32,
+    pub delay_tone: f32,
+}
+
+impl SynthInstance {
+    pub fn new(sample_rate: f64) -> Self {
+        Self {
+            pattern: SynthPattern::default(),
+            voice: SynthVoice::new(sample_rate as f32),
+            gate_samples: 0,
+            note_end_step: None,
+            lfo: Lfo::new(),
+            saturator: TubeSaturator::new(sample_rate as f32),
+            reverb: ReverbEffect::new(sample_rate),
+            delay: DelayEffect::new(),
+            reverb_amount: 0.3,
+            reverb_damping: 0.5,
+            delay_time: 0.0,
+            delay_feedback: 0.4,
+            delay_tone: 0.5,
+        }
+    }
+}
+
 /// Core audio engine running on the audio thread.
 /// Owns all voices, effects, the sequencer clock, and handles messages from the UI thread.
 pub struct AudioEngine {
@@ -84,24 +121,18 @@ pub struct AudioEngine {
     // Local copies updated from UI messages
     transport: Transport,
     drum_pattern: DrumPattern,
-    synth_pattern: SynthPattern,
     master_volume: f32,
 
     // DSP
     drum_voices: [Box<dyn DrumVoiceDsp>; 8],
-    synth_voice: SynthVoice,
-    lfo: Lfo,
-    /// Samples remaining for current synth note gate (0 = released/idle)
-    synth_gate_samples: u32,
-    /// Step index where the current long note should end (for multi-step notes)
-    synth_note_end_step: Option<usize>,
+    synth_a: SynthInstance,
+    synth_b: SynthInstance,
 
-    // Send effects
-    reverb: ReverbEffect,
-    delay: DelayEffect,
+    // Send effects (drum bus)
+    drum_reverb: ReverbEffect,
+    drum_delay: DelayEffect,
     compressor: GlueCompressor,
     drum_saturator: TubeSaturator,
-    synth_saturator: TubeSaturator,
     effect_params: EffectParams,
 
     // Display buffer (shared with UI)
@@ -116,10 +147,10 @@ pub struct AudioEngine {
 impl AudioEngine {
     pub fn new(sample_rate: f64, rx: Receiver<UiToAudio>, tx: Sender<AudioToUi>, display_buf: Arc<AudioDisplayBuffer>) -> Self {
         let effect_params = EffectParams::default();
-        let mut reverb = ReverbEffect::new(sample_rate);
-        let mut delay = DelayEffect::new();
-        reverb.set_params(effect_params.reverb_amount, effect_params.reverb_damping);
-        delay.set_params(
+        let mut drum_reverb = ReverbEffect::new(sample_rate);
+        let mut drum_delay = DelayEffect::new();
+        drum_reverb.set_params(effect_params.reverb_amount, effect_params.reverb_damping);
+        drum_delay.set_params(
             effect_params.delay_time,
             effect_params.delay_feedback,
             effect_params.delay_tone,
@@ -129,25 +160,20 @@ impl AudioEngine {
 
         let compressor = GlueCompressor::new(sample_rate);
         let drum_saturator = TubeSaturator::new(sample_rate as f32);
-        let synth_saturator = TubeSaturator::new(sample_rate as f32);
 
         Self {
             sample_rate,
             clock: SequencerClock::new(),
             transport: Transport::default(),
             drum_pattern: DrumPattern::default(),
-            synth_pattern: SynthPattern::default(),
             master_volume: 0.8,
             drum_voices: create_drum_voices(sample_rate),
-            synth_voice: SynthVoice::new(sample_rate as f32),
-            lfo: Lfo::new(),
-            synth_gate_samples: 0,
-            synth_note_end_step: None,
-            reverb,
-            delay,
+            synth_a: SynthInstance::new(sample_rate),
+            synth_b: SynthInstance::new(sample_rate),
+            drum_reverb,
+            drum_delay,
             compressor,
             drum_saturator,
-            synth_saturator,
             effect_params,
             display_buf,
             peak_tracker: 0.0,
@@ -169,13 +195,15 @@ impl AudioEngine {
                         && prev_state != PlayState::Stopped
                     {
                         self.clock.reset();
-                        self.lfo.reset();
-                        self.synth_note_end_step = None;
+                        self.synth_a.lfo.reset();
+                        self.synth_b.lfo.reset();
+                        self.synth_a.note_end_step = None;
+                        self.synth_b.note_end_step = None;
                     }
                     // Update delay time when BPM changes
                     if bpm_changed {
                         let ep = &self.effect_params;
-                        self.delay.set_params(
+                        self.drum_delay.set_params(
                             ep.delay_time,
                             ep.delay_feedback,
                             ep.delay_tone,
@@ -187,15 +215,23 @@ impl AudioEngine {
                 UiToAudio::SetDrumPattern(p) => {
                     self.drum_pattern = p;
                 }
-                UiToAudio::SetSynthPattern(p) => {
-                    self.synth_pattern = p;
-                    self.synth_note_end_step = None;
+                UiToAudio::SetSynthPattern(synth_id, p) => {
+                    match synth_id {
+                        SynthId::A => {
+                            self.synth_a.pattern = p;
+                            self.synth_a.note_end_step = None;
+                        }
+                        SynthId::B => {
+                            self.synth_b.pattern = p;
+                            self.synth_b.note_end_step = None;
+                        }
+                    }
                 }
                 UiToAudio::SetEffectParams(ep) => {
                     self.effect_params = ep;
-                    self.reverb
+                    self.drum_reverb
                         .set_params(ep.reverb_amount, ep.reverb_damping);
-                    self.delay.set_params(
+                    self.drum_delay.set_params(
                         ep.delay_time,
                         ep.delay_feedback,
                         ep.delay_tone,
@@ -206,7 +242,8 @@ impl AudioEngine {
                         .set_amount(ep.compressor_amount, self.sample_rate);
                     self.master_volume = ep.master_volume;
                     self.drum_saturator.set_drive(ep.drum_saturator_drive);
-                    self.synth_saturator.set_drive(ep.synth_saturator_drive);
+                    self.synth_a.saturator.set_drive(ep.synth_saturator_drive);
+                    self.synth_b.saturator.set_drive(ep.synth_saturator_drive);
                 }
                 UiToAudio::TriggerDrum(track_id) => {
                     let track = track_id as usize;
@@ -216,15 +253,23 @@ impl AudioEngine {
                         self.drum_voices[DrumTrackId::OpenHiHat as usize].choke();
                     }
                 }
-                UiToAudio::TriggerSynth(note) => {
-                    self.synth_voice.trigger(&self.synth_pattern.params, note);
+                UiToAudio::TriggerSynth(synth_id, note) => {
+                    let inst = match synth_id {
+                        SynthId::A => &mut self.synth_a,
+                        SynthId::B => &mut self.synth_b,
+                    };
+                    inst.voice.trigger(&inst.pattern.params, note);
                     // Gate for ~half a step (will be released when gate runs out)
                     let samples_per_step = (self.sample_rate * 60.0 / self.transport.bpm / 4.0) as u32;
-                    self.synth_gate_samples = samples_per_step * 3 / 4;
+                    inst.gate_samples = samples_per_step * 3 / 4;
                 }
-                UiToAudio::ReleaseSynth => {
-                    self.synth_voice.release();
-                    self.synth_gate_samples = 0;
+                UiToAudio::ReleaseSynth(synth_id) => {
+                    let inst = match synth_id {
+                        SynthId::A => &mut self.synth_a,
+                        SynthId::B => &mut self.synth_b,
+                    };
+                    inst.voice.release();
+                    inst.gate_samples = 0;
                 }
             }
         }
@@ -242,8 +287,13 @@ impl AudioEngine {
         } else {
             crate::sequencer::drum_pattern::MAX_STEPS
         };
-        let synth_loop_len = if self.transport.loop_config.enabled {
-            self.transport.loop_config.synth_length as usize
+        let synth_a_loop_len = if self.transport.loop_config.enabled {
+            self.transport.loop_config.synth_a_length as usize
+        } else {
+            crate::sequencer::synth_pattern::MAX_STEPS
+        };
+        let synth_b_loop_len = if self.transport.loop_config.enabled {
+            self.transport.loop_config.synth_b_length as usize
         } else {
             crate::sequencer::synth_pattern::MAX_STEPS
         };
@@ -259,7 +309,8 @@ impl AudioEngine {
                 ) {
                     // Map free-running global_step into per-instrument pattern positions
                     let drum_step = event.global_step % drum_loop_len.max(1);
-                    let synth_step = event.global_step % synth_loop_len.max(1);
+                    let synth_a_step = event.global_step % synth_a_loop_len.max(1);
+                    let synth_b_step = event.global_step % synth_b_loop_len.max(1);
                     let pattern_step = drum_step;
 
                     // Trigger drum voices for active steps
@@ -279,38 +330,62 @@ impl AudioEngine {
                         }
                     }
 
-                    // Trigger synth voice for active steps (with multi-step note length)
-                    let mut synth_triggered = false;
-                    let synth_step_data = &self.synth_pattern.steps[synth_step];
                     let samples_per_step = (self.sample_rate * 60.0 / self.transport.bpm / 4.0) as u32;
 
-                    if synth_step_data.is_active() && !self.synth_pattern.params.mute {
-                        // New active note always takes priority (re-trigger)
-                        self.synth_voice.trigger(&self.synth_pattern.params, synth_step_data.note);
-                        synth_triggered = true;
+                    // --- Synth A: trigger voice for active steps (with multi-step note length) ---
+                    let mut synth_a_triggered = false;
+                    {
+                        let step_data = &self.synth_a.pattern.steps[synth_a_step];
+                        if step_data.is_active() && !self.synth_a.pattern.params.mute {
+                            self.synth_a.voice.trigger(&self.synth_a.pattern.params, step_data.note);
+                            synth_a_triggered = true;
 
-                        let length = (synth_step_data.length as usize).max(1);
-                        if length <= 1 {
-                            // Single-step note: gate ~75% of one step
-                            self.synth_gate_samples = samples_per_step * 3 / 4;
-                            self.synth_note_end_step = None;
-                        } else {
-                            // Multi-step note: hold for full duration minus small release window
-                            let end_step = (synth_step + length - 1).min(synth_loop_len.max(1) - 1);
-                            self.synth_gate_samples = samples_per_step * length as u32 - samples_per_step / 4;
-                            self.synth_note_end_step = Some(end_step);
+                            let length = (step_data.length as usize).max(1);
+                            if length <= 1 {
+                                self.synth_a.gate_samples = samples_per_step * 3 / 4;
+                                self.synth_a.note_end_step = None;
+                            } else {
+                                let end_step = (synth_a_step + length - 1).min(synth_a_loop_len.max(1) - 1);
+                                self.synth_a.gate_samples = samples_per_step * length as u32 - samples_per_step / 4;
+                                self.synth_a.note_end_step = Some(end_step);
+                            }
+                        } else if let Some(end) = self.synth_a.note_end_step {
+                            if synth_a_step == end {
+                                self.synth_a.gate_samples = samples_per_step * 3 / 4;
+                                self.synth_a.note_end_step = None;
+                            }
+                        } else if !step_data.is_active() && self.synth_a.gate_samples > 0 {
+                            self.synth_a.voice.release();
+                            self.synth_a.gate_samples = 0;
                         }
-                    } else if let Some(end) = self.synth_note_end_step {
-                        if synth_step == end {
-                            // Last step of a long note — set gate to expire at ~75% of this step
-                            self.synth_gate_samples = samples_per_step * 3 / 4;
-                            self.synth_note_end_step = None;
+                    }
+
+                    // --- Synth B: trigger voice for active steps (with multi-step note length) ---
+                    let mut synth_b_triggered = false;
+                    {
+                        let step_data = &self.synth_b.pattern.steps[synth_b_step];
+                        if step_data.is_active() && !self.synth_b.pattern.params.mute {
+                            self.synth_b.voice.trigger(&self.synth_b.pattern.params, step_data.note);
+                            synth_b_triggered = true;
+
+                            let length = (step_data.length as usize).max(1);
+                            if length <= 1 {
+                                self.synth_b.gate_samples = samples_per_step * 3 / 4;
+                                self.synth_b.note_end_step = None;
+                            } else {
+                                let end_step = (synth_b_step + length - 1).min(synth_b_loop_len.max(1) - 1);
+                                self.synth_b.gate_samples = samples_per_step * length as u32 - samples_per_step / 4;
+                                self.synth_b.note_end_step = Some(end_step);
+                            }
+                        } else if let Some(end) = self.synth_b.note_end_step {
+                            if synth_b_step == end {
+                                self.synth_b.gate_samples = samples_per_step * 3 / 4;
+                                self.synth_b.note_end_step = None;
+                            }
+                        } else if !step_data.is_active() && self.synth_b.gate_samples > 0 {
+                            self.synth_b.voice.release();
+                            self.synth_b.gate_samples = 0;
                         }
-                        // Otherwise we're in the middle of a long note — do nothing, let gate continue
-                    } else if !synth_step_data.is_active() && self.synth_gate_samples > 0 {
-                        // No note on this step and not covered by a long note — release
-                        self.synth_voice.release();
-                        self.synth_gate_samples = 0;
                     }
 
                     // Send playback position to UI (drop if channel is full)
@@ -319,18 +394,26 @@ impl AudioEngine {
                         beat: event.beat,
                         is_bar_start: event.is_bar_start,
                         triggered,
-                        synth_triggered,
+                        synth_a_triggered,
                         drum_step,
-                        synth_step,
+                        synth_a_step,
+                        synth_b_step,
+                        synth_b_triggered,
                     });
                 }
             }
 
-            // Decrement synth gate counter and release when expired
-            if self.synth_gate_samples > 0 {
-                self.synth_gate_samples -= 1;
-                if self.synth_gate_samples == 0 {
-                    self.synth_voice.release();
+            // Decrement synth gate counters and release when expired
+            if self.synth_a.gate_samples > 0 {
+                self.synth_a.gate_samples -= 1;
+                if self.synth_a.gate_samples == 0 {
+                    self.synth_a.voice.release();
+                }
+            }
+            if self.synth_b.gate_samples > 0 {
+                self.synth_b.gate_samples -= 1;
+                if self.synth_b.gate_samples == 0 {
+                    self.synth_b.voice.release();
                 }
             }
 
@@ -367,42 +450,79 @@ impl AudioEngine {
             reverb_send *= drum_vol;
             delay_send *= drum_vol;
 
-            // Generate synth audio with LFO modulation + per-instrument saturator
-            let synth_params = &self.synth_pattern.params;
-            let mut modulated_params = *synth_params;
-            if synth_params.lfo_depth > 0.001 {
-                let div_mult = lfo_division_multiplier(synth_params.lfo_division);
-                let lfo_val = self.lfo.tick(
-                    self.sample_rate,
-                    self.transport.bpm,
-                    div_mult,
-                    synth_params.lfo_waveform,
-                );
-                let mod_amount = lfo_val * synth_params.lfo_depth;
-                let dest_idx = synth_params.lfo_dest as usize;
-                if dest_idx < LFO_DEST_FIELDS.len() {
-                    let field = LFO_DEST_FIELDS[dest_idx];
-                    let current = field.get(&modulated_params);
-                    field.set(&mut modulated_params, current + mod_amount);
+            // --- Generate synth A audio with LFO modulation + per-instrument FX ---
+            let synth_a_out = {
+                let synth_params = &self.synth_a.pattern.params;
+                let mut modulated_params = *synth_params;
+                if synth_params.lfo_depth > 0.001 {
+                    let div_mult = lfo_division_multiplier(synth_params.lfo_division);
+                    let lfo_val = self.synth_a.lfo.tick(
+                        self.sample_rate,
+                        self.transport.bpm,
+                        div_mult,
+                        synth_params.lfo_waveform,
+                    );
+                    let mod_amount = lfo_val * synth_params.lfo_depth;
+                    let dest_idx = synth_params.lfo_dest as usize;
+                    if dest_idx < LFO_DEST_FIELDS.len() {
+                        let field = LFO_DEST_FIELDS[dest_idx];
+                        let current = field.get(&modulated_params);
+                        field.set(&mut modulated_params, current + mod_amount);
+                    }
                 }
-            }
-            let synth_sample = self.synth_voice.tick(&modulated_params);
-            let mut synth_dry: f32 = 0.0;
-            if !self.synth_pattern.params.mute {
-                // tick() already applies params.volume, don't double-apply
-                synth_dry = synth_sample;
-                reverb_send += synth_sample * self.synth_pattern.params.send_reverb;
-                delay_send += synth_sample * self.synth_pattern.params.send_delay;
-            }
-            let synth_sat = self.synth_saturator.tick(synth_dry);
+                let synth_sample = self.synth_a.voice.tick(&modulated_params);
+                let mut synth_dry: f32 = 0.0;
+                if !self.synth_a.pattern.params.mute {
+                    synth_dry = synth_sample;
+                    reverb_send += synth_sample * self.synth_a.pattern.params.send_reverb;
+                    delay_send += synth_sample * self.synth_a.pattern.params.send_delay;
+                }
+                let sa_sat = self.synth_a.saturator.tick(synth_dry);
+                let sa_reverb = self.synth_a.reverb.tick(sa_sat * self.synth_a.pattern.params.send_reverb);
+                let sa_delay = self.synth_a.delay.tick(sa_sat * self.synth_a.pattern.params.send_delay);
+                sa_sat + sa_reverb + sa_delay
+            };
 
-            // Process send effects
-            let reverb_out = self.reverb.tick(reverb_send);
-            let delay_out = self.delay.tick(delay_send);
+            // --- Generate synth B audio with LFO modulation + per-instrument FX ---
+            let synth_b_out = {
+                let synth_params = &self.synth_b.pattern.params;
+                let mut modulated_params = *synth_params;
+                if synth_params.lfo_depth > 0.001 {
+                    let div_mult = lfo_division_multiplier(synth_params.lfo_division);
+                    let lfo_val = self.synth_b.lfo.tick(
+                        self.sample_rate,
+                        self.transport.bpm,
+                        div_mult,
+                        synth_params.lfo_waveform,
+                    );
+                    let mod_amount = lfo_val * synth_params.lfo_depth;
+                    let dest_idx = synth_params.lfo_dest as usize;
+                    if dest_idx < LFO_DEST_FIELDS.len() {
+                        let field = LFO_DEST_FIELDS[dest_idx];
+                        let current = field.get(&modulated_params);
+                        field.set(&mut modulated_params, current + mod_amount);
+                    }
+                }
+                let synth_sample = self.synth_b.voice.tick(&modulated_params);
+                let mut synth_dry: f32 = 0.0;
+                if !self.synth_b.pattern.params.mute {
+                    synth_dry = synth_sample;
+                    reverb_send += synth_sample * self.synth_b.pattern.params.send_reverb;
+                    delay_send += synth_sample * self.synth_b.pattern.params.send_delay;
+                }
+                let sb_sat = self.synth_b.saturator.tick(synth_dry);
+                let sb_reverb = self.synth_b.reverb.tick(sb_sat * self.synth_b.pattern.params.send_reverb);
+                let sb_delay = self.synth_b.delay.tick(sb_sat * self.synth_b.pattern.params.send_delay);
+                sb_sat + sb_reverb + sb_delay
+            };
+
+            // Process send effects (drum bus)
+            let reverb_out = self.drum_reverb.tick(reverb_send);
+            let delay_out = self.drum_delay.tick(delay_send);
 
             // Mix: per-instrument saturated signals + wet effects → headroom → master volume → compressor → clip
-            // Synth + effects are mono, centered to both channels
-            let mono_wet = synth_sat + reverb_out + delay_out;
+            // Both synths centered (mono to both channels)
+            let mono_wet = synth_a_out + synth_b_out + reverb_out + delay_out;
             let mixed_l = (drum_sat_l + mono_wet) * 0.5 * self.master_volume;
             let mixed_r = (drum_sat_r + mono_wet) * 0.5 * self.master_volume;
             // Linked stereo compression: detect from mono sum, apply gain to both channels

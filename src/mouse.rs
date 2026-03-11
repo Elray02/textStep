@@ -7,10 +7,10 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::app::{App, CompressorDrag, DragState, DrumControlField, FocusSection, KNOB_FIELDS, ModalState, SynthDrag, SynthNoteDrag};
-use crate::messages::UiToAudio;
+use crate::messages::{SynthId, UiToAudio};
 use crate::sequencer::drum_pattern::{NUM_DRUM_TRACKS, TRACK_IDS};
 use crate::sequencer::project::{NUM_KITS, NUM_PATTERNS};
-use crate::ui::layout::compute_layout;
+use crate::ui::layout::{compute_dual_layout, DualSynthLayout};
 
 /// Threshold for double-click detection.
 const DOUBLE_CLICK_MS: u128 = 300;
@@ -40,7 +40,7 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, term_size: Rect) {
         MouseEventKind::Up(MouseButton::Left) => {
             // If synth note drag ended without movement, toggle the step
             if let Some(ref drag) = app.ui.mouse.synth_note_drag {
-                if app.synth_pattern.steps[drag.step].length == drag.original_length {
+                if app.synth_a_pattern.steps[drag.step].length == drag.original_length {
                     // No length change — treat as double-click toggle on second click
                     // (first click just selects; this is handled by last_click logic)
                 }
@@ -60,9 +60,9 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, term_size: Rect) {
 }
 
 fn handle_scroll(app: &mut App, col: u16, row: u16, delta: f32, term_size: Rect) {
-    let ly = compute_layout(term_size, app.ui.synth_collapsed, app.ui.show_help, app.ui.show_waveform);
+    let ly = compute_dual_layout(term_size, &app.ui.panel_vis);
 
-    if hit_test_area(col, row, ly.knobs) {
+    if hit_test_area(col, row, ly.drum_knobs) {
         // Scroll over drum knobs: adjust currently selected drum param
         let track = app.ui.drum_ctrl_track;
         let field = app.ui.drum_ctrl_field;
@@ -70,13 +70,22 @@ fn handle_scroll(app: &mut App, col: u16, row: u16, delta: f32, term_size: Rect)
         set_param_value(&mut app.drum_pattern.params[track], field, current + delta);
         app.send_drum_pattern();
         app.dirty = true;
-    } else if hit_test_area(col, row, ly.synth_knobs) {
-        // Scroll over synth knobs: adjust currently selected synth param
-        let field = app.ui.synth_ctrl_field;
+    } else if hit_test_area(col, row, ly.synth_a_knobs) {
+        // Scroll over synth A knobs
+        let field = app.ui.synth_a.ctrl_field;
         if !field.is_enum() {
-            let current = field.get(&app.synth_pattern.params);
-            field.set(&mut app.synth_pattern.params, (current + delta).clamp(0.0, 1.0));
-            app.send_synth_pattern();
+            let current = field.get(&app.synth_a_pattern.params);
+            field.set(&mut app.synth_a_pattern.params, (current + delta).clamp(0.0, 1.0));
+            app.send_synth_pattern(SynthId::A);
+            app.dirty = true;
+        }
+    } else if hit_test_area(col, row, ly.synth_b_knobs) {
+        // Scroll over synth B knobs
+        let field = app.ui.synth_b.ctrl_field;
+        if !field.is_enum() {
+            let current = field.get(&app.synth_b_pattern.params);
+            field.set(&mut app.synth_b_pattern.params, (current + delta).clamp(0.0, 1.0));
+            app.send_synth_pattern(SynthId::B);
             app.dirty = true;
         }
     } else if hit_test_compressor_gauge(col, row, ly.transport) {
@@ -88,62 +97,48 @@ fn handle_scroll(app: &mut App, col: u16, row: u16, delta: f32, term_size: Rect)
 }
 
 fn handle_left_down(app: &mut App, col: u16, row: u16, term_size: Rect) {
-    use crate::app::{FaderDrag, FaderKind};
+    let ly = compute_dual_layout(term_size, &app.ui.panel_vis);
 
-    let ly = compute_layout(term_size, app.ui.synth_collapsed, app.ui.show_help, app.ui.show_waveform);
+    // ── Panel toggle clicks ([X] on expanded, anywhere on collapsed) ──
+    if check_panel_toggle(col, row, &ly, &mut app.ui.panel_vis) {
+        return;
+    }
 
     // ── Click-to-focus on sections ──────────────────────────────────
     if hit_test_area(col, row, ly.transport) {
         app.ui.focus = FocusSection::Transport;
-    } else if hit_test_area(col, row, ly.synth_grid) {
-        app.ui.focus = FocusSection::SynthGrid;
-    } else if hit_test_area(col, row, ly.synth_knobs) {
-        app.ui.focus = FocusSection::SynthControls;
+    } else if hit_test_area(col, row, ly.synth_a_grid) {
+        app.ui.focus = FocusSection::SynthAGrid;
+    } else if hit_test_area(col, row, ly.synth_a_knobs) {
+        app.ui.focus = FocusSection::SynthAControls;
+    } else if hit_test_area(col, row, ly.synth_b_grid) {
+        app.ui.focus = FocusSection::SynthBGrid;
+    } else if hit_test_area(col, row, ly.synth_b_knobs) {
+        app.ui.focus = FocusSection::SynthBControls;
     } else if hit_test_area(col, row, ly.drum_grid) {
         app.ui.focus = FocusSection::DrumGrid;
-    } else if hit_test_area(col, row, ly.knobs) {
+    } else if hit_test_area(col, row, ly.drum_knobs) {
         app.ui.focus = FocusSection::Knobs;
     }
 
-    // Check volume faders first
-    if hit_test_fader(col, row, ly.drum_fader) {
-        let value = fader_value_from_click(row, ly.drum_fader);
-        app.effect_params.drum_volume = value;
-        app.send_effect_params();
-        app.dirty = true;
-        app.ui.mouse.fader_drag = Some(FaderDrag {
-            kind: FaderKind::Drum,
-            start_y: row,
-            start_value: value,
-        });
-        return;
-    }
-    if hit_test_fader(col, row, ly.synth_fader) {
-        let value = fader_value_from_click(row, ly.synth_fader);
-        app.synth_pattern.params.volume = value;
-        app.send_synth_pattern();
-        app.dirty = true;
-        app.ui.mouse.fader_drag = Some(FaderDrag {
-            kind: FaderKind::Synth,
-            start_y: row,
-            start_value: value,
-        });
-        return;
-    }
-
-    // Check each zone
-    if let Some(step) = hit_test_synth_step(col, row, ly.synth_grid) {
-        handle_synth_step_click_with_col(app, step, col);
-    } else if let Some(field) = hit_test_synth_knobs(col, row, ly.synth_knobs) {
-        handle_synth_knobs_click(app, field, row);
-    } else if hit_test_area(col, row, ly.synth_knobs) {
-        app.ui.focus = FocusSection::SynthControls;
+    // ── Synth A zones ───────────────────────────────────────────────
+    if let Some(step) = hit_test_synth_step(col, row, ly.synth_a_grid) {
+        handle_synth_step_click_with_col(app, SynthId::A, step, col);
+    } else if let Some(field) = hit_test_synth_knobs(col, row, ly.synth_a_knobs) {
+        handle_synth_knobs_click(app, SynthId::A, field, row);
+    // ── Synth B zones ───────────────────────────────────────────────
+    } else if let Some(step) = hit_test_synth_step(col, row, ly.synth_b_grid) {
+        handle_synth_step_click_with_col(app, SynthId::B, step, col);
+    } else if let Some(field) = hit_test_synth_knobs(col, row, ly.synth_b_knobs) {
+        handle_synth_knobs_click(app, SynthId::B, field, row);
+    // ── Drum zones ──────────────────────────────────────────────────
     } else if let Some((track, step)) = hit_test_grid_step(col, row, ly.drum_grid) {
         handle_grid_click(app, track, step);
     } else if let Some((track, is_mute)) = hit_test_mute_solo(col, row, ly.drum_grid) {
         handle_mute_solo_click(app, track, is_mute);
-    } else if let Some(field) = hit_test_knobs_panel(col, row, ly.knobs) {
+    } else if let Some(field) = hit_test_knobs_panel(col, row, ly.drum_knobs) {
         handle_knobs_click(app, field, row);
+    // ── Bottom / transport zones ────────────────────────────────────
     } else if let Some(track) = hit_test_activity_pad(col, row, ly.activity_bar) {
         handle_pad_click(app, track);
     } else if hit_test_compressor_gauge(col, row, ly.transport) {
@@ -153,7 +148,6 @@ fn handle_left_down(app: &mut App, col: u16, row: u16, term_size: Rect) {
     } else if let Some((idx, is_synth)) = hit_test_kit_selector(col, row, ly.transport) {
         if is_synth { app.switch_synth_kit(idx); } else { app.switch_kit(idx); }
     } else if hit_test_play_button(col, row, ly.transport) {
-        // Task 12: Clickable play/stop toggle
         use crate::sequencer::transport::PlayState;
         app.transport.state = match app.transport.state {
             PlayState::Stopped => PlayState::Playing,
@@ -162,7 +156,6 @@ fn handle_left_down(app: &mut App, col: u16, row: u16, term_size: Rect) {
         };
         app.send_transport();
     } else if hit_test_record_button(col, row, ly.transport) {
-        // Task 12: Clickable record toggle
         use crate::sequencer::transport::RecordMode;
         app.transport.record_mode = match app.transport.record_mode {
             RecordMode::Off => RecordMode::On,
@@ -170,6 +163,86 @@ fn handle_left_down(app: &mut App, col: u16, row: u16, term_size: Rect) {
         };
         app.send_transport();
     }
+}
+
+// ── Panel toggle click detection ─────────────────────────────────────────────
+
+/// Check if a click is on a panel toggle control.
+/// Clicking [X] (first 4 chars) of an expanded panel's title bar collapses it.
+/// Clicking anywhere on a collapsed bar expands that panel.
+/// Returns true if a toggle was performed.
+fn check_panel_toggle(col: u16, row: u16, ly: &DualSynthLayout, vis: &mut crate::app::PanelVisibility) -> bool {
+    // Helper: check collapsed bar (clicking anywhere expands)
+    fn check_collapsed(col: u16, row: u16, rect: Rect) -> bool {
+        rect.height > 0 && row >= rect.y && row < rect.y + rect.height
+            && col >= rect.x && col < rect.x + rect.width
+    }
+    // Helper: check expanded title bar [X] region (first 4 chars of first row)
+    fn check_expanded_toggle(col: u16, row: u16, rect: Rect) -> bool {
+        rect.height > 0 && row == rect.y && col >= rect.x && col < rect.x + 4
+    }
+
+    // Synth A Knobs
+    if vis.synth_a_knobs && check_expanded_toggle(col, row, ly.synth_a_knobs) {
+        vis.synth_a_knobs = false;
+        return true;
+    }
+    if !vis.synth_a_knobs && check_collapsed(col, row, ly.synth_a_knobs_collapsed) {
+        vis.synth_a_knobs = true;
+        return true;
+    }
+
+    // Synth A Grid
+    if vis.synth_a_grid && check_expanded_toggle(col, row, ly.synth_a_grid) {
+        vis.synth_a_grid = false;
+        return true;
+    }
+    if !vis.synth_a_grid && check_collapsed(col, row, ly.synth_a_grid_collapsed) {
+        vis.synth_a_grid = true;
+        return true;
+    }
+
+    // Synth B Knobs
+    if vis.synth_b_knobs && check_expanded_toggle(col, row, ly.synth_b_knobs) {
+        vis.synth_b_knobs = false;
+        return true;
+    }
+    if !vis.synth_b_knobs && check_collapsed(col, row, ly.synth_b_knobs_collapsed) {
+        vis.synth_b_knobs = true;
+        return true;
+    }
+
+    // Synth B Grid
+    if vis.synth_b_grid && check_expanded_toggle(col, row, ly.synth_b_grid) {
+        vis.synth_b_grid = false;
+        return true;
+    }
+    if !vis.synth_b_grid && check_collapsed(col, row, ly.synth_b_grid_collapsed) {
+        vis.synth_b_grid = true;
+        return true;
+    }
+
+    // Drum Knobs
+    if vis.drum_knobs && check_expanded_toggle(col, row, ly.drum_knobs) {
+        vis.drum_knobs = false;
+        return true;
+    }
+    if !vis.drum_knobs && check_collapsed(col, row, ly.drum_knobs_collapsed) {
+        vis.drum_knobs = true;
+        return true;
+    }
+
+    // Waveform
+    if vis.waveform && check_expanded_toggle(col, row, ly.waveform) {
+        vis.waveform = false;
+        return true;
+    }
+    if !vis.waveform && check_collapsed(col, row, ly.waveform_collapsed) {
+        vis.waveform = true;
+        return true;
+    }
+
+    false
 }
 
 // ── Synth step hit testing ───────────────────────────────────────────────────
@@ -206,7 +279,7 @@ fn hit_test_synth_step(col: u16, row: u16, grid_area: Rect) -> Option<usize> {
     }
 }
 
-fn handle_synth_step_click(app: &mut App, step: usize) {
+fn handle_synth_step_click(app: &mut App, synth_id: SynthId, step: usize) {
     let now = Instant::now();
 
     let is_double = if let Some((prev_time, _prev_track, prev_step)) = app.ui.mouse.last_click {
@@ -216,42 +289,49 @@ fn handle_synth_step_click(app: &mut App, step: usize) {
         false
     };
 
+    // Route to the correct synth pattern and UI state
+    let (pattern, ui_state, focus) = match synth_id {
+        SynthId::A => (&mut app.synth_a_pattern, &mut app.ui.synth_a, FocusSection::SynthAGrid),
+        SynthId::B => (&mut app.synth_b_pattern, &mut app.ui.synth_b, FocusSection::SynthBGrid),
+    };
+
     if is_double {
         // Double-click: toggle step
         use crate::sequencer::synth_pattern::SynthStep;
-        if app.synth_pattern.steps[step].is_active() {
-            app.synth_pattern.steps[step] = SynthStep { note: 0, velocity: 0, length: 1 };
+        if pattern.steps[step].is_active() {
+            pattern.steps[step] = SynthStep { note: 0, velocity: 0, length: 1 };
         } else {
-            // Insert note at current octave
-            let note = 60 + (app.ui.synth_octave as u8).wrapping_sub(4) * 12; // C at current octave
-            app.synth_pattern.steps[step] = SynthStep { note, velocity: 100, length: 1 };
+            let note = 60 + (ui_state.octave as u8).wrapping_sub(4) * 12;
+            pattern.steps[step] = SynthStep { note, velocity: 100, length: 1 };
         }
-        app.send_synth_pattern();
+        match synth_id {
+            SynthId::A => app.send_synth_pattern(SynthId::A),
+            SynthId::B => app.send_synth_pattern(SynthId::B),
+        }
         app.dirty = true;
         app.ui.mouse.last_click = None;
         app.ui.mouse.synth_note_drag = None;
     } else {
         // Single click: move cursor + focus
-        app.ui.focus = FocusSection::SynthGrid;
-        app.ui.synth_cursor_step = step;
-        app.ui.mouse.last_click = Some((now, 0, step)); // track=0 placeholder for synth
+        app.ui.focus = focus;
+        ui_state.cursor_step = step;
+        app.ui.mouse.last_click = Some((now, 0, step));
 
-        if app.synth_pattern.steps[step].is_active() {
-            // Active step: start a note-length drag
+        if pattern.steps[step].is_active() {
             app.ui.mouse.synth_note_drag = Some(SynthNoteDrag {
+                synth_id,
                 step,
-                original_length: app.synth_pattern.steps[step].length,
-                start_col: 0, // will be set from the event col in handle_left_down
+                original_length: pattern.steps[step].length,
+                start_col: 0,
             });
         } else {
-            // Empty step: create a note
             use crate::sequencer::synth_pattern::SynthStep;
-            let note = 60 + (app.ui.synth_octave as u8).wrapping_sub(4) * 12;
-            app.synth_pattern.steps[step] = SynthStep { note, velocity: 100, length: 1 };
-            app.send_synth_pattern();
+            let note = 60 + (ui_state.octave as u8).wrapping_sub(4) * 12;
+            pattern.steps[step] = SynthStep { note, velocity: 100, length: 1 };
+            app.send_synth_pattern(synth_id);
             app.dirty = true;
-            // Start drag so user can immediately extend the new note
             app.ui.mouse.synth_note_drag = Some(SynthNoteDrag {
+                synth_id,
                 step,
                 original_length: 1,
                 start_col: 0,
@@ -261,9 +341,8 @@ fn handle_synth_step_click(app: &mut App, step: usize) {
 }
 
 /// Variant that also records the click column for drag calculation.
-fn handle_synth_step_click_with_col(app: &mut App, step: usize, col: u16) {
-    handle_synth_step_click(app, step);
-    // Update the start_col if a drag was just started
+fn handle_synth_step_click_with_col(app: &mut App, synth_id: SynthId, step: usize, col: u16) {
+    handle_synth_step_click(app, synth_id, step);
     if let Some(ref mut drag) = app.ui.mouse.synth_note_drag {
         drag.start_col = col;
     }
@@ -483,25 +562,34 @@ fn hit_adsr_field(col: u16, area: Rect, fields: &[SynthControlField]) -> Option<
     Some(fields[idx])
 }
 
-fn handle_synth_knobs_click(app: &mut App, field: SynthControlField, start_y: u16) {
-    app.ui.focus = FocusSection::SynthControls;
-    app.ui.synth_ctrl_field = field;
+fn handle_synth_knobs_click(app: &mut App, synth_id: SynthId, field: SynthControlField, start_y: u16) {
+    let (pattern, ui_state, focus) = match synth_id {
+        SynthId::A => (&mut app.synth_a_pattern, &mut app.ui.synth_a, FocusSection::SynthAControls),
+        SynthId::B => (&mut app.synth_b_pattern, &mut app.ui.synth_b, FocusSection::SynthBControls),
+    };
+
+    app.ui.focus = focus;
+    ui_state.ctrl_field = field;
 
     // For enum fields, just cycle on click instead of drag
     if field.is_enum() {
         let max_val: u8 = if field == SynthControlField::FilterType { 2 } else { 3 };
-        let cur = field.get(&app.synth_pattern.params);
+        let cur = field.get(&pattern.params);
         let cur_int = (cur * max_val as f32).round() as u8;
         let new_int = (cur_int + 1) % (max_val + 1);
-        field.set(&mut app.synth_pattern.params, new_int as f32 / max_val as f32);
-        app.send_synth_pattern();
+        field.set(&mut pattern.params, new_int as f32 / max_val as f32);
+        match synth_id {
+            SynthId::A => app.send_synth_pattern(SynthId::A),
+            SynthId::B => app.send_synth_pattern(SynthId::B),
+        }
         app.dirty = true;
         return;
     }
 
     // Start drag for continuous params
-    let start_value = field.get(&app.synth_pattern.params);
+    let start_value = field.get(&pattern.params);
     app.ui.mouse.synth_drag = Some(SynthDrag {
+        synth_id,
         field,
         start_y,
         start_value,
@@ -710,18 +798,22 @@ fn handle_drag(app: &mut App, col: u16, row: u16, _term_size: Rect) {
     // Check if dragging a synth note (horizontal resize)
     if let Some(ref drag) = app.ui.mouse.synth_note_drag {
         let drag = drag.clone();
-        // Compute the target step from the column delta
-        // Each step is 2 chars wide in the grid
         let col_delta = col as i32 - drag.start_col as i32;
-        let step_delta = col_delta / 2; // 2 chars per step
+        let step_delta = col_delta / 2;
         let new_length = (drag.original_length as i32 + step_delta).clamp(1, 32) as u8;
-        // Clamp to loop boundary
-        let loop_len = app.transport.loop_config.synth_length as usize;
+        let loop_len = match drag.synth_id {
+            SynthId::A => app.transport.loop_config.synth_a_length as usize,
+            SynthId::B => app.transport.loop_config.synth_b_length as usize,
+        };
         let max_length = (loop_len - drag.step).min(32) as u8;
         let clamped = new_length.min(max_length).max(1);
-        if app.synth_pattern.steps[drag.step].length != clamped {
-            app.synth_pattern.steps[drag.step].length = clamped;
-            app.send_synth_pattern();
+        let pattern = match drag.synth_id {
+            SynthId::A => &mut app.synth_a_pattern,
+            SynthId::B => &mut app.synth_b_pattern,
+        };
+        if pattern.steps[drag.step].length != clamped {
+            pattern.steps[drag.step].length = clamped;
+            app.send_synth_pattern(drag.synth_id);
             app.dirty = true;
         }
         return;
@@ -744,8 +836,15 @@ fn handle_drag(app: &mut App, col: u16, row: u16, _term_size: Rect) {
         let d = d.clone();
         let delta_y = d.start_y as f32 - row as f32;
         let new_value = (d.start_value + delta_y * DRAG_SENSITIVITY).clamp(0.0, 1.0);
-        d.field.set(&mut app.synth_pattern.params, new_value);
-        app.send_synth_pattern();
+        let pattern = match d.synth_id {
+            SynthId::A => &mut app.synth_a_pattern,
+            SynthId::B => &mut app.synth_b_pattern,
+        };
+        d.field.set(&mut pattern.params, new_value);
+        match d.synth_id {
+            SynthId::A => app.send_synth_pattern(SynthId::A),
+            SynthId::B => app.send_synth_pattern(SynthId::B),
+        }
         app.dirty = true;
         return;
     }
@@ -886,6 +985,8 @@ fn hit_test_pattern_selector(col: u16, row: u16, transport_area: Rect) -> Option
 // ── Volume fader hit testing ─────────────────────────────────────────────────
 
 /// Check if click is within a fader area.
+/// (Currently unused — faders not in DualSynthLayout yet, kept for future re-use.)
+#[allow(dead_code)]
 fn hit_test_fader(col: u16, row: u16, fader_area: Rect) -> bool {
     col >= fader_area.x
         && col < fader_area.x + fader_area.width
@@ -894,6 +995,8 @@ fn hit_test_fader(col: u16, row: u16, fader_area: Rect) -> bool {
 }
 
 /// Convert a click row to a volume value (0.0 at bottom, 1.0 at top).
+/// (Currently unused — faders not in DualSynthLayout yet, kept for future re-use.)
+#[allow(dead_code)]
 fn fader_value_from_click(row: u16, fader_area: Rect) -> f32 {
     // Inner area (inside border)
     let inner_top = fader_area.y + 1;
@@ -923,8 +1026,8 @@ fn handle_fader_drag(app: &mut App, row: u16) {
             app.send_effect_params();
         }
         FaderKind::Synth => {
-            app.synth_pattern.params.volume = new_value;
-            app.send_synth_pattern();
+            app.synth_a_pattern.params.volume = new_value;
+            app.send_synth_pattern(SynthId::A);
         }
     }
     app.dirty = true;

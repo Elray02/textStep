@@ -20,8 +20,26 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use layout::*;
 
 use crate::app::{App, DrumControlField, FocusSection, ModalState, SplashPhase};
+use crate::messages::SynthId;
 use crate::presets::PresetTarget;
 use crate::sequencer::drum_pattern::{NUM_DRUM_TRACKS, TRACK_IDS};
+
+/// Render a collapsed panel bar with [.] indicator showing it can be expanded.
+fn render_collapsed_bar(f: &mut Frame, area: Rect, label: &str, focused: bool) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let style = if focused {
+        Style::default().fg(theme::CYAN)
+    } else {
+        Style::default().fg(theme::DIM_TEXT)
+    };
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .title(format!("[.] {}", label))
+        .title_style(style);
+    f.render_widget(block, area);
+}
 
 /// Top-level render function.
 pub fn render(f: &mut Frame, app: &App) {
@@ -36,39 +54,85 @@ pub fn render(f: &mut Frame, app: &App) {
     // Matrix reveal: render real UI first, then overlay matrix rain on unrevealed cells
     let matrix_active = app.ui.splash.phase == SplashPhase::MatrixReveal;
 
-    // Compute layout once — shared structure between render and mouse
-    let ly = compute_layout(size, app.ui.synth_collapsed, app.ui.show_help, app.ui.show_waveform);
+    // Compute dual-synth layout from panel visibility
+    let ly = compute_dual_layout(size, &app.ui.panel_vis);
 
+    // ── Transport ────────────────────────────────────────────────
     transport_bar::render_transport(f, ly.transport, app);
-    if app.ui.synth_collapsed {
-        render_synth_collapsed(f, ly.synth_section, app);
+
+    // ── Synth A Knobs ────────────────────────────────────────────
+    if app.ui.panel_vis.synth_a_knobs {
+        synth_knobs::render_synth_knobs(f, ly.synth_a_knobs, app, SynthId::A);
     } else {
-        render_volume_fader(f, ly.synth_fader, app.synth_pattern.params.volume, "SY");
-        synth_knobs::render_synth_knobs(f, ly.synth_knobs, app);
-        synth_grid::render_synth_grid(f, ly.synth_grid, app);
-    }
-    render_separator(f, ly.separator);
-    render_volume_fader(f, ly.drum_fader, app.effect_params.drum_volume, "DR");
-    drum_grid::render_drum_grid(f, ly.drum_grid, app);
-    knobs::render_knobs(f, ly.knobs, app);
-
-    if let Some(extra) = ly.extra {
-        if app.ui.show_help {
-            help_overlay::render_help(f, extra);
-        } else if app.ui.show_waveform {
-            let wave_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(3),  // VU meter
-                    Constraint::Min(20),   // Oscilloscope
-                ])
-                .split(extra);
-            waveform::render_vu_meter(f, wave_chunks[0], &app.display_buf);
-            waveform::render_scope_bars(f, wave_chunks[1], &app.ui.scope_bars, &app.ui.scope_intensity);
-        }
+        let focused = matches!(app.ui.focus, FocusSection::SynthAControls);
+        render_collapsed_bar(f, ly.synth_a_knobs_collapsed, "SYNTH A KNOBS", focused);
     }
 
+    // ── Synth A Grid ─────────────────────────────────────────────
+    if app.ui.panel_vis.synth_a_grid {
+        synth_grid::render_synth_grid(f, ly.synth_a_grid, app, SynthId::A);
+    } else {
+        let focused = matches!(app.ui.focus, FocusSection::SynthAGrid);
+        render_collapsed_bar(f, ly.synth_a_grid_collapsed, "SYNTH A GRID", focused);
+    }
+
+    // ── Synth B Knobs ────────────────────────────────────────────
+    if app.ui.panel_vis.synth_b_knobs {
+        synth_knobs::render_synth_knobs(f, ly.synth_b_knobs, app, SynthId::B);
+    } else {
+        let focused = matches!(app.ui.focus, FocusSection::SynthBControls);
+        render_collapsed_bar(f, ly.synth_b_knobs_collapsed, "SYNTH B KNOBS", focused);
+    }
+
+    // ── Synth B Grid ─────────────────────────────────────────────
+    if app.ui.panel_vis.synth_b_grid {
+        synth_grid::render_synth_grid(f, ly.synth_b_grid, app, SynthId::B);
+    } else {
+        let focused = matches!(app.ui.focus, FocusSection::SynthBGrid);
+        render_collapsed_bar(f, ly.synth_b_grid_collapsed, "SYNTH B GRID", focused);
+    }
+
+    // ── Drum Grid ────────────────────────────────────────────────
+    if app.ui.panel_vis.drum_grid {
+        drum_grid::render_drum_grid(f, ly.drum_grid, app);
+    }
+
+    // ── Drum Knobs ───────────────────────────────────────────────
+    if app.ui.panel_vis.drum_knobs {
+        knobs::render_knobs(f, ly.drum_knobs, app);
+    } else {
+        let focused = matches!(app.ui.focus, FocusSection::Knobs);
+        render_collapsed_bar(f, ly.drum_knobs_collapsed, "DRUM KNOBS", focused);
+    }
+
+    // ── Waveform ─────────────────────────────────────────────────
+    if app.ui.panel_vis.waveform {
+        let wave_area = ly.waveform;
+        let wave_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(3),  // VU meter
+                Constraint::Min(20),   // Oscilloscope
+            ])
+            .split(wave_area);
+        waveform::render_vu_meter(f, wave_chunks[0], &app.display_buf);
+        waveform::render_scope_bars(f, wave_chunks[1], &app.ui.scope_bars, &app.ui.scope_intensity);
+    } else {
+        render_collapsed_bar(f, ly.waveform_collapsed, "WAVEFORM", false);
+    }
+
+    // ── Activity bar ─────────────────────────────────────────────
     render_activity_bar(f, ly.activity_bar, app);
+
+    // ── Help overlay (rendered on top, like a modal) ─────────────
+    if app.ui.show_help {
+        // Render help as a centered overlay
+        let help_h = HELP_HEIGHT.min(size.height.saturating_sub(2));
+        let help_y = size.y + (size.height.saturating_sub(help_h)) / 2;
+        let help_area = Rect::new(size.x, help_y, size.width, help_h);
+        f.render_widget(Clear, help_area);
+        help_overlay::render_help(f, help_area);
+    }
 
     // Matrix rain overlay (covers unrevealed cells)
     if matrix_active {
@@ -93,87 +157,7 @@ pub fn render(f: &mut Frame, app: &App) {
     }
 }
 
-// ── Separator ────────────────────────────────────────────────────────────────
-
-fn render_separator(f: &mut Frame, area: Rect) {
-    let line = "─".repeat(area.width as usize);
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(line, Style::default().fg(Color::DarkGray)))),
-        area,
-    );
-}
-
-// ── Volume faders ────────────────────────────────────────────────────────────
-
-/// Render the synth section in collapsed mode: just a title bar with label.
-fn render_synth_collapsed(f: &mut Frame, area: Rect, _app: &App) {
-    let block = Block::default()
-        .title(" SYNTH [F2 expand] ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-    f.render_widget(block, area);
-}
-
-/// Render a vertical volume fader (Hi-Fi LED style, same as VU meter).
-fn render_volume_fader(f: &mut Frame, area: Rect, volume: f32, _label: &str) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(40, 40, 40)));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    if inner.height == 0 || inner.width == 0 {
-        return;
-    }
-
-    let total_rows = inner.height as usize;
-    let filled = (volume * total_rows as f32).round() as usize;
-
-    for row_idx in 0..total_rows {
-        let bar_level = total_rows - 1 - row_idx; // 0=bottom, max=top
-        let ratio = bar_level as f32 / total_rows.max(1) as f32;
-
-        // Hi-Fi LED color zones
-        let (base, dim) = if ratio > 0.78 {
-            ((255u8, 30, 0), (40u8, 5, 0))       // Red
-        } else if ratio > 0.56 {
-            ((255, 140, 0), (35, 20, 0))          // Orange
-        } else if ratio > 0.33 {
-            ((220, 220, 0), (30, 30, 0))          // Yellow
-        } else {
-            ((0, 220, 0), (0, 30, 0))             // Green
-        };
-
-        let is_lit = bar_level < filled;
-        let color = if is_lit {
-            Color::Rgb(base.0, base.1, base.2)
-        } else {
-            Color::Rgb(dim.0, dim.1, dim.2)
-        };
-
-        let ch = if is_lit { "\u{2588}" } else { "\u{2591}" }; // █ or ░
-
-        // Fill the inner width
-        let y = inner.y + row_idx as u16;
-        for col in 0..inner.width {
-            let span = Span::styled(ch, Style::default().fg(color));
-            f.render_widget(Paragraph::new(Line::from(span)), Rect::new(inner.x + col, y, 1, 1));
-        }
-    }
-
-    // Show percentage at bottom of fader
-    let pct = format!("{:02}", (volume * 99.0).round() as u8);
-    if area.height >= 3 && area.width >= 3 {
-        // Overlay percentage on the bottom row of the fader border
-        let pct_y = area.y + area.height - 1;
-        let pct_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(pct, pct_style))),
-            Rect::new(area.x, pct_y, area.width, 1),
-        );
-    }
-}
+// ── Activity bar ─────────────────────────────────────────────────────────────
 
 /// Activity bar: trigger pads + param tweak + status message.
 fn render_activity_bar(f: &mut Frame, area: Rect, app: &App) {

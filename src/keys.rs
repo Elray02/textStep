@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, DrumControlField, FocusSection, ModalAction, ModalState};
 use crate::presets::{PatternMergeMode, PresetTarget};
-use crate::messages::UiToAudio;
+use crate::messages::{SynthId, UiToAudio};
 use crate::sequencer::drum_pattern::{MAX_STEPS, NUM_DRUM_TRACKS, TRACK_IDS};
 use crate::sequencer::project::{NUM_KITS, NUM_PATTERNS};
 use crate::sequencer::synth_pattern::{SynthControlField, MAX_STEPS as SYNTH_MAX_STEPS};
@@ -51,6 +51,37 @@ fn kit_key_to_index(ch: char) -> Option<usize> {
         '1'..='8' => Some((ch as usize) - ('1' as usize)),
         _ => None,
     }
+}
+
+/// Determine which synth (A or B) is targeted by the current focus section.
+/// Returns None if focus is on drums or transport.
+fn focused_synth(focus: FocusSection) -> Option<SynthId> {
+    match focus {
+        FocusSection::SynthAGrid | FocusSection::SynthAControls => Some(SynthId::A),
+        FocusSection::SynthBGrid | FocusSection::SynthBControls => Some(SynthId::B),
+        _ => None,
+    }
+}
+
+/// Get mutable reference to the SynthUiState for the given synth.
+fn synth_ui_mut(app: &mut App, synth_id: SynthId) -> &mut crate::app::SynthUiState {
+    match synth_id {
+        SynthId::A => &mut app.ui.synth_a,
+        SynthId::B => &mut app.ui.synth_b,
+    }
+}
+
+/// Get mutable references to both the SynthUiState and SynthPattern for the given synth.
+fn synth_ui_and_pattern(app: &mut App, synth_id: SynthId) -> (&mut crate::app::SynthUiState, &mut crate::sequencer::synth_pattern::SynthPattern) {
+    match synth_id {
+        SynthId::A => (&mut app.ui.synth_a, &mut app.synth_a_pattern),
+        SynthId::B => (&mut app.ui.synth_b, &mut app.synth_b_pattern),
+    }
+}
+
+/// Send the appropriate synth pattern to the audio thread.
+fn send_synth(app: &App, synth_id: SynthId) {
+    app.send_synth_pattern(synth_id);
 }
 
 /// Main key event handler — dispatches based on modal state first.
@@ -156,19 +187,27 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             return;
         }
 
-        // Synth section collapse/expand toggle
+        // Synth section collapse/expand toggle (bulk toggle all synth panels)
         KeyCode::F(2) => {
-            app.ui.synth_collapsed = !app.ui.synth_collapsed;
+            let all_synth_visible = app.ui.panel_vis.synth_a_knobs
+                && app.ui.panel_vis.synth_a_grid
+                && app.ui.panel_vis.synth_b_knobs
+                && app.ui.panel_vis.synth_b_grid;
+            let new_state = !all_synth_visible;
+            app.ui.panel_vis.synth_a_knobs = new_state;
+            app.ui.panel_vis.synth_a_grid = new_state;
+            app.ui.panel_vis.synth_b_knobs = new_state;
+            app.ui.panel_vis.synth_b_grid = new_state;
             return;
         }
 
         // Focus navigation
         KeyCode::Tab if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-            app.ui.focus = app.ui.focus.next();
+            app.ui.focus = app.ui.focus.next(&app.ui.panel_vis);
             return;
         }
         KeyCode::BackTab => {
-            app.ui.focus = app.ui.focus.prev();
+            app.ui.focus = app.ui.focus.prev(&app.ui.panel_vis);
             return;
         }
 
@@ -253,15 +292,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
         // Loop length cycle (Shift+L) — focus-aware
         KeyCode::Char('L') => {
-            let is_synth = matches!(app.ui.focus, FocusSection::SynthGrid | FocusSection::SynthControls);
-            if is_synth {
-                app.transport.loop_config.synth_length = match app.transport.loop_config.synth_length {
-                    8 => 16,
-                    16 => 24,
-                    24 => 32,
-                    _ => 8,
+            if let Some(synth_id) = focused_synth(app.ui.focus) {
+                let len_ref = match synth_id {
+                    SynthId::A => &mut app.transport.loop_config.synth_a_length,
+                    SynthId::B => &mut app.transport.loop_config.synth_b_length,
                 };
-                app.show_status(format!("Synth loop: {} steps", app.transport.loop_config.synth_length));
+                *len_ref = match *len_ref { 8 => 16, 16 => 24, 24 => 32, _ => 8 };
+                let new_len = *len_ref;
+                let label = match synth_id { SynthId::A => "Synth A", SynthId::B => "Synth B" };
+                app.show_status(format!("{} loop: {} steps", label, new_len));
             } else {
                 app.transport.loop_config.drum_length = match app.transport.loop_config.drum_length {
                     8 => 16,
@@ -353,7 +392,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
         // Tube saturator: Shift+T cycles presets (Off → Warm → Hot → Crispy → Off) — focus-aware
         KeyCode::Char('T') => {
-            let is_synth = matches!(app.ui.focus, FocusSection::SynthGrid | FocusSection::SynthControls);
+            let is_synth = focused_synth(app.ui.focus).is_some();
             let cur = if is_synth {
                 app.effect_params.synth_saturator_drive
             } else {
@@ -401,31 +440,49 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
         // Pattern prev/next: [ ] queued, { } immediate — focus-aware
         KeyCode::Char('[') => {
-            let is_synth = matches!(app.ui.focus, FocusSection::SynthGrid | FocusSection::SynthControls);
-            let cur = if is_synth { app.ui.synth_active_pattern } else { app.ui.active_pattern };
-            let prev = if cur == 0 { NUM_PATTERNS - 1 } else { cur - 1 };
-            if is_synth { app.queue_synth_pattern(prev); } else { app.queue_pattern(prev); }
+            if let Some(synth_id) = focused_synth(app.ui.focus) {
+                let ui = match synth_id { SynthId::A => &app.ui.synth_a, SynthId::B => &app.ui.synth_b };
+                let prev = if ui.active_pattern == 0 { NUM_PATTERNS - 1 } else { ui.active_pattern - 1 };
+                app.queue_synth_pattern_for(synth_id, prev);
+            } else {
+                let cur = app.ui.active_pattern;
+                let prev = if cur == 0 { NUM_PATTERNS - 1 } else { cur - 1 };
+                app.queue_pattern(prev);
+            }
             return;
         }
         KeyCode::Char(']') => {
-            let is_synth = matches!(app.ui.focus, FocusSection::SynthGrid | FocusSection::SynthControls);
-            let cur = if is_synth { app.ui.synth_active_pattern } else { app.ui.active_pattern };
-            let next = (cur + 1) % NUM_PATTERNS;
-            if is_synth { app.queue_synth_pattern(next); } else { app.queue_pattern(next); }
+            if let Some(synth_id) = focused_synth(app.ui.focus) {
+                let ui = match synth_id { SynthId::A => &app.ui.synth_a, SynthId::B => &app.ui.synth_b };
+                let next = (ui.active_pattern + 1) % NUM_PATTERNS;
+                app.queue_synth_pattern_for(synth_id, next);
+            } else {
+                let next = (app.ui.active_pattern + 1) % NUM_PATTERNS;
+                app.queue_pattern(next);
+            }
             return;
         }
         KeyCode::Char('{') => {
-            let is_synth = matches!(app.ui.focus, FocusSection::SynthGrid | FocusSection::SynthControls);
-            let cur = if is_synth { app.ui.synth_active_pattern } else { app.ui.active_pattern };
-            let prev = if cur == 0 { NUM_PATTERNS - 1 } else { cur - 1 };
-            if is_synth { app.switch_synth_pattern(prev); } else { app.switch_pattern(prev); }
+            if let Some(synth_id) = focused_synth(app.ui.focus) {
+                let ui = match synth_id { SynthId::A => &app.ui.synth_a, SynthId::B => &app.ui.synth_b };
+                let prev = if ui.active_pattern == 0 { NUM_PATTERNS - 1 } else { ui.active_pattern - 1 };
+                app.switch_synth_pattern_for(synth_id, prev);
+            } else {
+                let cur = app.ui.active_pattern;
+                let prev = if cur == 0 { NUM_PATTERNS - 1 } else { cur - 1 };
+                app.switch_pattern(prev);
+            }
             return;
         }
         KeyCode::Char('}') => {
-            let is_synth = matches!(app.ui.focus, FocusSection::SynthGrid | FocusSection::SynthControls);
-            let cur = if is_synth { app.ui.synth_active_pattern } else { app.ui.active_pattern };
-            let next = (cur + 1) % NUM_PATTERNS;
-            if is_synth { app.switch_synth_pattern(next); } else { app.switch_pattern(next); }
+            if let Some(synth_id) = focused_synth(app.ui.focus) {
+                let ui = match synth_id { SynthId::A => &app.ui.synth_a, SynthId::B => &app.ui.synth_b };
+                let next = (ui.active_pattern + 1) % NUM_PATTERNS;
+                app.switch_synth_pattern_for(synth_id, next);
+            } else {
+                let next = (app.ui.active_pattern + 1) % NUM_PATTERNS;
+                app.switch_pattern(next);
+            }
             return;
         }
 
@@ -436,9 +493,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     if let KeyCode::Char(ch) = key.code {
         if let Some(idx) = pattern_key_to_index(ch) {
             let is_shift = key.modifiers.contains(KeyModifiers::SHIFT);
-            let is_synth = matches!(app.ui.focus, FocusSection::SynthGrid | FocusSection::SynthControls);
-            if is_synth {
-                if is_shift { app.switch_synth_pattern(idx); } else { app.queue_synth_pattern(idx); }
+            if let Some(synth_id) = focused_synth(app.ui.focus) {
+                if is_shift { app.switch_synth_pattern_for(synth_id, idx); } else { app.queue_synth_pattern_for(synth_id, idx); }
             } else {
                 if is_shift { app.switch_pattern(idx); } else { app.queue_pattern(idx); }
             }
@@ -450,8 +506,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     if let KeyCode::Char(ch) = key.code {
         if let Some(idx) = kit_key_to_index(ch) {
             if idx < NUM_KITS {
-                let is_synth = matches!(app.ui.focus, FocusSection::SynthGrid | FocusSection::SynthControls);
-                if is_synth { app.switch_synth_kit(idx); } else { app.switch_kit(idx); }
+                if let Some(synth_id) = focused_synth(app.ui.focus) {
+                    app.switch_synth_kit_for(synth_id, idx);
+                } else {
+                    app.switch_kit(idx);
+                }
             }
             return;
         }
@@ -460,22 +519,32 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     // ── Drum pad keys / Synth note keys (ZXCVBNM,) ─────────────────────
     if let KeyCode::Char(ch) = key.code {
         // When synth grid/controls is focused, use as chromatic keyboard
-        if matches!(app.ui.focus, FocusSection::SynthGrid | FocusSection::SynthControls) {
+        if let Some(synth_id) = focused_synth(app.ui.focus) {
             if let Some(semitone) = synth_key_to_semitone(ch) {
-                let note = (app.ui.synth_octave * 12 + semitone).min(127);
+                let (ui, pattern) = match synth_id {
+                    SynthId::A => (&mut app.ui.synth_a, &mut app.synth_a_pattern),
+                    SynthId::B => (&mut app.ui.synth_b, &mut app.synth_b_pattern),
+                };
+                let note = (ui.octave * 12 + semitone).min(127);
                 // Trigger synth sound
-                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(note));
-                app.ui.synth_flash = 6;
+                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
+                ui.flash = 6;
 
                 // If on synth grid, write note at cursor
-                if app.ui.focus == FocusSection::SynthGrid {
-                    let s = app.ui.synth_cursor_step;
-                    app.synth_pattern.steps[s].note = note;
-                    app.synth_pattern.steps[s].velocity = 100;
-                    app.send_synth_pattern();
+                let is_grid = matches!(app.ui.focus, FocusSection::SynthAGrid | FocusSection::SynthBGrid);
+                if is_grid {
+                    let s = ui.cursor_step;
+                    pattern.steps[s].note = note;
+                    pattern.steps[s].velocity = 100;
+                    app.send_synth_pattern(synth_id);
                     app.dirty = true;
                     // Advance cursor
-                    app.ui.synth_cursor_step = (app.ui.synth_cursor_step + 1) % SYNTH_MAX_STEPS;
+                    // Re-borrow to avoid conflict — we already wrote above
+                    let ui2 = match synth_id {
+                        SynthId::A => &mut app.ui.synth_a,
+                        SynthId::B => &mut app.ui.synth_b,
+                    };
+                    ui2.cursor_step = (ui2.cursor_step + 1) % SYNTH_MAX_STEPS;
                 }
 
                 // If recording + playing, write at playhead
@@ -484,9 +553,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 {
                     let step = app.ui.playback_step;
                     if step < SYNTH_MAX_STEPS {
-                        app.synth_pattern.steps[step].note = note;
-                        app.synth_pattern.steps[step].velocity = 100;
-                        app.send_synth_pattern();
+                        let pattern = match synth_id {
+                            SynthId::A => &mut app.synth_a_pattern,
+                            SynthId::B => &mut app.synth_b_pattern,
+                        };
+                        pattern.steps[step].note = note;
+                        pattern.steps[step].velocity = 100;
+                        app.send_synth_pattern(synth_id);
                         app.dirty = true;
                     }
                 }
@@ -520,8 +593,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     match app.ui.focus {
         FocusSection::DrumGrid => handle_drum_grid(app, key),
         FocusSection::Knobs => handle_knobs(app, key),
-        FocusSection::SynthGrid => handle_synth_grid(app, key),
-        FocusSection::SynthControls => handle_synth_controls(app, key),
+        FocusSection::SynthAGrid => handle_synth_grid(app, key, SynthId::A),
+        FocusSection::SynthAControls => handle_synth_controls(app, key, SynthId::A),
+        FocusSection::SynthBGrid => handle_synth_grid(app, key, SynthId::B),
+        FocusSection::SynthBControls => handle_synth_controls(app, key, SynthId::B),
         FocusSection::Transport => {} // transport keys are all global
     }
 }
@@ -733,100 +808,124 @@ fn handle_knobs(app: &mut App, key: KeyEvent) {
 
 // ── Synth Grid ─────────────────────────────────────────────────────────────
 
-fn handle_synth_grid(app: &mut App, key: KeyEvent) {
+fn handle_synth_grid(app: &mut App, key: KeyEvent, synth_id: SynthId) {
+    // Helper macro-like closures aren't ideal; use direct match for each synth
+    let controls_focus = match synth_id {
+        SynthId::A => FocusSection::SynthAControls,
+        SynthId::B => FocusSection::SynthBControls,
+    };
+    let label = match synth_id { SynthId::A => "Synth A", SynthId::B => "Synth B" };
+
     match key.code {
         // Shift+Left: decrease note length
         KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            let s = app.ui.synth_cursor_step;
-            if app.synth_pattern.steps[s].is_active() && app.synth_pattern.steps[s].length > 1 {
-                app.synth_pattern.steps[s].length -= 1;
-                app.send_synth_pattern();
+            let (ui, pattern) = synth_ui_and_pattern(app, synth_id);
+            let s = ui.cursor_step;
+            if pattern.steps[s].is_active() && pattern.steps[s].length > 1 {
+                pattern.steps[s].length -= 1;
+                send_synth(app, synth_id);
                 app.dirty = true;
             }
         }
         // Shift+Right: increase note length
         KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            let s = app.ui.synth_cursor_step;
-            if app.synth_pattern.steps[s].is_active() {
-                let loop_len = app.transport.loop_config.synth_length as usize;
+            let loop_len = match synth_id {
+                SynthId::A => app.transport.loop_config.synth_a_length as usize,
+                SynthId::B => app.transport.loop_config.synth_b_length as usize,
+            };
+            let (ui, pattern) = synth_ui_and_pattern(app, synth_id);
+            let s = ui.cursor_step;
+            if pattern.steps[s].is_active() {
                 let max_length = (loop_len - s).min(32) as u8;
-                if app.synth_pattern.steps[s].length < max_length {
-                    app.synth_pattern.steps[s].length += 1;
-                    app.send_synth_pattern();
+                if pattern.steps[s].length < max_length {
+                    pattern.steps[s].length += 1;
+                    send_synth(app, synth_id);
                     app.dirty = true;
                 }
             }
         }
         KeyCode::Left => {
-            app.ui.synth_cursor_step = if app.ui.synth_cursor_step == 0 {
+            let ui = synth_ui_mut(app, synth_id);
+            ui.cursor_step = if ui.cursor_step == 0 {
                 SYNTH_MAX_STEPS - 1
             } else {
-                app.ui.synth_cursor_step - 1
+                ui.cursor_step - 1
             };
         }
         KeyCode::Right => {
-            if app.ui.synth_cursor_step == SYNTH_MAX_STEPS - 1 {
+            let ui = synth_ui_mut(app, synth_id);
+            if ui.cursor_step == SYNTH_MAX_STEPS - 1 {
                 // Move into synth controls
-                app.ui.focus = FocusSection::SynthControls;
+                app.ui.focus = controls_focus;
             } else {
-                app.ui.synth_cursor_step += 1;
+                let ui = synth_ui_mut(app, synth_id);
+                ui.cursor_step += 1;
             }
         }
         KeyCode::Up => {
             // Change note pitch up (semitone), or Shift for octave
-            let s = app.ui.synth_cursor_step;
-            if app.synth_pattern.steps[s].is_active() {
+            let (ui, pattern) = synth_ui_and_pattern(app, synth_id);
+            let s = ui.cursor_step;
+            if pattern.steps[s].is_active() {
                 let delta = if key.modifiers.contains(KeyModifiers::SHIFT) { 12 } else { 1 };
-                app.synth_pattern.steps[s].note = (app.synth_pattern.steps[s].note + delta).min(127);
-                let note = app.synth_pattern.steps[s].note;
-                app.send_synth_pattern();
+                pattern.steps[s].note = (pattern.steps[s].note + delta).min(127);
+                let note = pattern.steps[s].note;
+                ui.flash = 6;
+                send_synth(app, synth_id);
                 app.dirty = true;
-                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(note));
-                app.ui.synth_flash = 6;
+                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
             }
         }
         KeyCode::Down => {
-            let s = app.ui.synth_cursor_step;
-            if app.synth_pattern.steps[s].is_active() {
+            let (ui, pattern) = synth_ui_and_pattern(app, synth_id);
+            let s = ui.cursor_step;
+            if pattern.steps[s].is_active() {
                 let delta = if key.modifiers.contains(KeyModifiers::SHIFT) { 12 } else { 1 };
-                app.synth_pattern.steps[s].note = app.synth_pattern.steps[s].note.saturating_sub(delta).max(12);
-                let note = app.synth_pattern.steps[s].note;
-                app.send_synth_pattern();
+                pattern.steps[s].note = pattern.steps[s].note.saturating_sub(delta).max(12);
+                let note = pattern.steps[s].note;
+                ui.flash = 6;
+                send_synth(app, synth_id);
                 app.dirty = true;
-                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(note));
-                app.ui.synth_flash = 6;
+                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
             }
         }
         KeyCode::Enter => {
-            let s = app.ui.synth_cursor_step;
-            let step = &mut app.synth_pattern.steps[s];
+            let (ui, pattern) = synth_ui_and_pattern(app, synth_id);
+            let s = ui.cursor_step;
+            let octave = ui.octave;
+            let step = &mut pattern.steps[s];
             if step.is_active() {
                 // Toggle off — reset length
                 step.velocity = 0;
                 step.length = 1;
             } else {
                 // Toggle on with default note at current octave
-                step.note = app.ui.synth_octave * 12 + 12; // C at current octave
+                step.note = octave * 12 + 12; // C at current octave
                 step.velocity = 100;
                 step.length = 1;
             }
-            app.send_synth_pattern();
+            send_synth(app, synth_id);
             app.dirty = true;
             // Advance cursor
-            app.ui.synth_cursor_step = (app.ui.synth_cursor_step + 1) % SYNTH_MAX_STEPS;
+            let ui = synth_ui_mut(app, synth_id);
+            ui.cursor_step = (ui.cursor_step + 1) % SYNTH_MAX_STEPS;
         }
         KeyCode::Char('(') => {
             // Octave down
-            if app.ui.synth_octave > 0 {
-                app.ui.synth_octave -= 1;
-                app.show_status(format!("Synth octave: {}", app.ui.synth_octave));
+            let ui = synth_ui_mut(app, synth_id);
+            if ui.octave > 0 {
+                ui.octave -= 1;
+                let oct = ui.octave;
+                app.show_status(format!("{} octave: {}", label, oct));
             }
         }
         KeyCode::Char(')') => {
             // Octave up
-            if app.ui.synth_octave < 8 {
-                app.ui.synth_octave += 1;
-                app.show_status(format!("Synth octave: {}", app.ui.synth_octave));
+            let ui = synth_ui_mut(app, synth_id);
+            if ui.octave < 8 {
+                ui.octave += 1;
+                let oct = ui.octave;
+                app.show_status(format!("{} octave: {}", label, oct));
             }
         }
         _ => {}
@@ -870,65 +969,74 @@ fn find_synth_field_pos(field: SynthControlField) -> (usize, usize) {
     (0, 0)
 }
 
-fn handle_synth_controls(app: &mut App, key: KeyEvent) {
+fn handle_synth_controls(app: &mut App, key: KeyEvent, synth_id: SynthId) {
     let has_shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let has_alt = key.modifiers.contains(KeyModifiers::ALT);
 
     match key.code {
         KeyCode::Left => {
-            let (r, c) = find_synth_field_pos(app.ui.synth_ctrl_field);
+            let ui = synth_ui_mut(app, synth_id);
+            let (r, c) = find_synth_field_pos(ui.ctrl_field);
             if c > 0 {
-                app.ui.synth_ctrl_field = SYNTH_CTRL_ROWS[r][c - 1];
+                ui.ctrl_field = SYNTH_CTRL_ROWS[r][c - 1];
             }
-            // At leftmost field: do nothing (no cross-box nav)
         }
         KeyCode::Right => {
-            let (r, c) = find_synth_field_pos(app.ui.synth_ctrl_field);
+            let ui = synth_ui_mut(app, synth_id);
+            let (r, c) = find_synth_field_pos(ui.ctrl_field);
             if c + 1 < SYNTH_CTRL_ROWS[r].len() {
-                app.ui.synth_ctrl_field = SYNTH_CTRL_ROWS[r][c + 1];
+                ui.ctrl_field = SYNTH_CTRL_ROWS[r][c + 1];
             }
-            // At rightmost field: do nothing (no cross-box nav)
         }
         KeyCode::Up if has_shift || has_alt => {
-            adjust_synth_field(app, PARAM_INCREMENT);
+            adjust_synth_field(app, synth_id, PARAM_INCREMENT);
             if has_alt {
-                let note = app.ui.synth_octave * 12 + 12;
-                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(note));
-                app.ui.synth_flash = 6;
+                let ui = synth_ui_mut(app, synth_id);
+                let note = ui.octave * 12 + 12;
+                ui.flash = 6;
+                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
             }
         }
         KeyCode::Down if has_shift || has_alt => {
-            adjust_synth_field(app, -PARAM_INCREMENT);
+            adjust_synth_field(app, synth_id, -PARAM_INCREMENT);
             if has_alt {
-                let note = app.ui.synth_octave * 12 + 12;
-                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(note));
-                app.ui.synth_flash = 6;
+                let ui = synth_ui_mut(app, synth_id);
+                let note = ui.octave * 12 + 12;
+                ui.flash = 6;
+                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
             }
         }
         KeyCode::Up => {
-            let (r, c) = find_synth_field_pos(app.ui.synth_ctrl_field);
+            let ui = synth_ui_mut(app, synth_id);
+            let (r, c) = find_synth_field_pos(ui.ctrl_field);
             if r > 0 {
                 let new_row = &SYNTH_CTRL_ROWS[r - 1];
                 let new_c = c.min(new_row.len() - 1);
-                app.ui.synth_ctrl_field = new_row[new_c];
+                ui.ctrl_field = new_row[new_c];
             }
         }
         KeyCode::Down => {
-            let (r, c) = find_synth_field_pos(app.ui.synth_ctrl_field);
+            let ui = synth_ui_mut(app, synth_id);
+            let (r, c) = find_synth_field_pos(ui.ctrl_field);
             if r + 1 < SYNTH_CTRL_ROWS.len() {
                 let new_row = &SYNTH_CTRL_ROWS[r + 1];
                 let new_c = c.min(new_row.len() - 1);
-                app.ui.synth_ctrl_field = new_row[new_c];
+                ui.ctrl_field = new_row[new_c];
             }
         }
         _ => {}
     }
 }
 
-fn adjust_synth_field(app: &mut App, delta: f32) {
-    let field = app.ui.synth_ctrl_field;
+fn adjust_synth_field(app: &mut App, synth_id: SynthId, delta: f32) {
+    let ui = synth_ui_mut(app, synth_id);
+    let field = ui.ctrl_field;
+    let pattern = match synth_id {
+        SynthId::A => &mut app.synth_a_pattern,
+        SynthId::B => &mut app.synth_b_pattern,
+    };
     if field == SynthControlField::Mute {
-        app.synth_pattern.params.mute = !app.synth_pattern.params.mute;
+        pattern.params.mute = !pattern.params.mute;
     } else if field.is_enum() {
         let max_val: u8 = match field {
             SynthControlField::FilterType => 2,
@@ -937,19 +1045,19 @@ fn adjust_synth_field(app: &mut App, delta: f32) {
             SynthControlField::LfoDest => (crate::sequencer::synth_pattern::LFO_DEST_FIELDS.len() - 1) as u8,
             _ => 3, // Osc1/Osc2 waveforms
         };
-        let cur = field.get(&app.synth_pattern.params);
+        let cur = field.get(&pattern.params);
         let cur_int = (cur * max_val as f32).round() as u8;
         let new_int = if delta > 0.0 {
             (cur_int + 1).min(max_val)
         } else {
             cur_int.saturating_sub(1)
         };
-        field.set(&mut app.synth_pattern.params, new_int as f32 / max_val as f32);
+        field.set(&mut pattern.params, new_int as f32 / max_val as f32);
     } else {
-        let cur = field.get(&app.synth_pattern.params);
-        field.set(&mut app.synth_pattern.params, cur + delta);
+        let cur = field.get(&pattern.params);
+        field.set(&mut pattern.params, cur + delta);
     }
-    app.send_synth_pattern();
+    send_synth(app, synth_id);
     app.dirty = true;
 }
 
@@ -1053,7 +1161,8 @@ fn handle_preset_browser(app: &mut App, key: KeyEvent) {
                 PresetTarget::SynthSound => {
                     if let Some(params) = browser.selected_synth_params() {
                         let name = browser.preset_names.get(browser.preset_idx).copied().unwrap_or("?");
-                        app.apply_synth_preset(params);
+                        let synth_id = browser.target_synth;
+                        app.apply_synth_preset(synth_id, params);
                         app.ui.modal = ModalState::None;
                         app.show_status(format!("Loaded: {}", name));
                     }
@@ -1117,7 +1226,8 @@ fn handle_pattern_browser(app: &mut App, key: KeyEvent) {
                 app.show_status(format!("{}: {}", mode_label, name));
             } else if let Some(preset) = pb.browser.selected_synth_pattern() {
                 let name = preset.name;
-                app.apply_synth_pattern_preset(&preset.steps, merge);
+                let synth_id = pb.browser.target_synth;
+                app.apply_synth_pattern_preset(synth_id, &preset.steps, merge);
                 app.show_status(format!("{}: {}", mode_label, name));
             }
         }
@@ -1148,10 +1258,15 @@ fn preview_preset(app: &mut App) {
         }
         PresetTarget::SynthSound => {
             if let Some(params) = browser.selected_synth_params() {
-                app.apply_synth_preset(params);
-                let note = app.ui.synth_octave * 12 + 12;
-                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(note));
-                app.ui.synth_flash = 6;
+                let synth_id = browser.target_synth;
+                app.apply_synth_preset(synth_id, params);
+                let (octave, flash) = match synth_id {
+                    SynthId::A => (app.ui.synth_a.octave, &mut app.ui.synth_a.flash),
+                    SynthId::B => (app.ui.synth_b.octave, &mut app.ui.synth_b.flash),
+                };
+                let note = octave * 12 + 12;
+                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
+                *flash = 6;
             }
         }
         PresetTarget::Pattern | PresetTarget::SynthPattern => {} // no preview for patterns
