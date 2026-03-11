@@ -94,3 +94,60 @@ jobs:
         with:
           name: textstep-x86_64-unknown-linux-gnu
           path: target/release/textstep
+
+  create-release:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for create-release label on merged PR
+        id: check-label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+            const hasLabel = prs.some(pr =>
+              pr.labels.some(label => label.name === 'create-release')
+            );
+            core.setOutput('should-release', hasLabel.toString());
+
+      - name: Get version from Cargo.toml
+        if: steps.check-label.outputs.should-release == 'true'
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        if: steps.check-label.outputs.should-release == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        if: steps.check-label.outputs.should-release == 'true'
+        run: |
+          cd artifacts
+          for dir in textstep-*/; do
+            name="${dir%/}"
+            chmod +x "$dir/textstep"
+            tar czf "${name}.tar.gz" -C "$dir" textstep
+          done
+
+      - name: Create GitHub Release
+        if: steps.check-label.outputs.should-release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: TextStep ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: artifacts/*.tar.gz
