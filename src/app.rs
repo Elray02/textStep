@@ -398,6 +398,7 @@ pub enum FaderKind {
 /// State for synth knob drag.
 #[derive(Clone, Debug)]
 pub struct SynthDrag {
+    pub synth_id: crate::messages::SynthId,
     pub field: crate::sequencer::synth_pattern::SynthControlField,
     pub start_y: u16,
     pub start_value: f32,
@@ -406,6 +407,7 @@ pub struct SynthDrag {
 /// State for synth note length drag (horizontal resize).
 #[derive(Clone, Debug)]
 pub struct SynthNoteDrag {
+    pub synth_id: crate::messages::SynthId,
     pub step: usize,
     pub original_length: u8,
     pub start_col: u16,
@@ -825,6 +827,13 @@ impl App {
         let _ = self
             .tx_to_audio
             .send(UiToAudio::SetSynthPattern(SynthId::A, self.synth_a_pattern.clone()));
+    }
+
+    /// Send the synth B pattern to the audio thread.
+    pub fn send_synth_b_pattern(&self) {
+        let _ = self
+            .tx_to_audio
+            .send(UiToAudio::SetSynthPattern(SynthId::B, self.synth_b_pattern.clone()));
     }
 
     /// Send effect params to the audio thread.
