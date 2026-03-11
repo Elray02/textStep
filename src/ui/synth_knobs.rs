@@ -203,14 +203,13 @@ pub fn render_synth_knobs(f: &mut Frame, area: Rect, app: &App, synth_id: SynthI
         render_adsr_bars(f, filt_split[1], params, FILT_ENV_ADSR, sel, focused);
     }
 
-    // ── Row group 3: AMP (left) + LFO1 (center) + LFO2 (right) ────────
+    // ── Row group 3: AMP (left) + LFO1/LFO2 stacked (right) ──────────
     {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(34), // AMP
-                Constraint::Percentage(33), // LFO1
-                Constraint::Percentage(33), // LFO2
+                Constraint::Percentage(50), // AMP
+                Constraint::Percentage(50), // LFO1 + LFO2 stacked
             ])
             .split(row_groups[2]);
 
@@ -224,23 +223,32 @@ pub fn render_synth_knobs(f: &mut Frame, area: Rect, app: &App, synth_id: SynthI
         );
         render_amp_group(f, amp_body, params, app.effect_params.synth_saturator_drive, sel, focused);
 
+        // LFO1 + LFO2 stacked vertically in the right column
+        let lfo_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // LFO1: header + value + label
+                Constraint::Min(3),   // LFO2: header + value + label
+            ])
+            .split(cols[1]);
+
         // LFO1 section
-        render_section_header(f, cols[1], "LFO1");
+        render_section_header(f, lfo_rows[0], "LFO1");
         let lfo1_body = Rect::new(
-            cols[1].x,
-            cols[1].y + 1,
-            cols[1].width,
-            cols[1].height.saturating_sub(1),
+            lfo_rows[0].x,
+            lfo_rows[0].y + 1,
+            lfo_rows[0].width,
+            lfo_rows[0].height.saturating_sub(1),
         );
         render_lfo_row(f, lfo1_body, params, sel, focused, false);
 
         // LFO2 section
-        render_section_header(f, cols[2], "LFO2");
+        render_section_header(f, lfo_rows[1], "LFO2");
         let lfo2_body = Rect::new(
-            cols[2].x,
-            cols[2].y + 1,
-            cols[2].width,
-            cols[2].height.saturating_sub(1),
+            lfo_rows[1].x,
+            lfo_rows[1].y + 1,
+            lfo_rows[1].width,
+            lfo_rows[1].height.saturating_sub(1),
         );
         render_lfo_row(f, lfo2_body, params, sel, focused, true);
     }
