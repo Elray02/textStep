@@ -639,7 +639,16 @@ fn handle_synth_knobs_click(app: &mut App, synth_id: SynthId, field: SynthContro
 
     // For enum fields, just cycle on click instead of drag
     if field.is_enum() {
-        let max_val: u8 = if field == SynthControlField::FilterType { 2 } else { 3 };
+        let max_val: u8 = match field {
+            SynthControlField::FilterType => 2,
+            SynthControlField::LfoWaveform | SynthControlField::Lfo2Waveform =>
+                (crate::sequencer::synth_pattern::NUM_LFO_WAVEFORMS - 1),
+            SynthControlField::LfoDivision | SynthControlField::Lfo2Division =>
+                (crate::sequencer::synth_pattern::LFO_DIVISIONS.len() - 1) as u8,
+            SynthControlField::LfoDest | SynthControlField::Lfo2Dest =>
+                (crate::sequencer::synth_pattern::LFO_DEST_FIELDS.len() - 1) as u8,
+            _ => 3, // Osc1/Osc2 waveforms
+        };
         let cur = field.get(&pattern.params);
         let cur_int = (cur * max_val as f32).round() as u8;
         let new_int = (cur_int + 1) % (max_val + 1);
