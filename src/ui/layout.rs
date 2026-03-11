@@ -2,11 +2,18 @@
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-/// Transport bar height (title border + 4 content lines + bottom border)
+use crate::app::PanelVisibility;
+
+// ── Dimension constants ──────────────────────────────────────────────────────
+
+/// Transport bar height (title border + 4 content lines + bottom border).
+/// Will increase to 7 when Task 11 adds Synth A / Synth B / Drum status lines.
 pub const TRANSPORT_HEIGHT: u16 = 6;
 
 /// Height of the drum knobs panel (1 label + 5 bars + 1 value + 2 border).
 pub const KNOBS_HEIGHT: u16 = 9;
+/// Alias used by the new dual-synth layout.
+pub const DRUM_KNOBS_HEIGHT: u16 = KNOBS_HEIGHT;
 
 /// Height of the synth knobs panel (OSC 8 + ENV/FILT 8 + LFO 3 + AMP 7 + 2 border = 30).
 pub const SYNTH_KNOBS_HEIGHT: u16 = 30;
@@ -17,8 +24,14 @@ pub const SYNTH_GRID_HEIGHT: u16 = 6;
 /// Combined synth section height (knobs + steps).
 pub const SYNTH_SECTION_HEIGHT: u16 = SYNTH_KNOBS_HEIGHT + SYNTH_GRID_HEIGHT;
 
-/// Synth section when collapsed (border + step row + border)
+/// Synth section when collapsed (border + step row + border) — legacy constant.
 pub const SYNTH_COLLAPSED_HEIGHT: u16 = 3;
+
+/// Minimum height for the drum grid (8 tracks + borders + header).
+pub const DRUM_GRID_MIN_HEIGHT: u16 = 11;
+
+/// Height of a collapsed panel (1 top-border + 1 content line showing label).
+pub const COLLAPSED_PANEL_HEIGHT: u16 = 2;
 
 /// Width of the volume fader column.
 pub const FADER_WIDTH: u16 = 3;
@@ -26,14 +39,16 @@ pub const FADER_WIDTH: u16 = 3;
 /// Height of the waveform/oscilloscope panel (including borders).
 pub const WAVEFORM_HEIGHT: u16 = 11;
 
-/// Activity bar (bottom status line)
+/// Activity bar (bottom status line).
 pub const ACTIVITY_BAR_HEIGHT: u16 = 1;
 
-/// Separator line
+/// Separator line.
 pub const SEPARATOR_HEIGHT: u16 = 1;
 
-/// Help panel height
+/// Help panel height.
 pub const HELP_HEIGHT: u16 = 22;
+
+// ── Legacy ComputedLayout (used by current render + mouse code) ──────────────
 
 /// Pre-computed layout rects, shared between render and mouse hit-testing.
 pub struct ComputedLayout {
@@ -55,6 +70,7 @@ pub struct ComputedLayout {
 }
 
 /// Compute layout for all sections. Both ui/mod.rs and mouse.rs consume this.
+/// (Legacy signature — will be replaced by compute_dual_layout in Tasks 8/10.)
 pub fn compute_layout(
     size: Rect,
     synth_collapsed: bool,
@@ -146,5 +162,287 @@ pub fn compute_layout(
         synth_grid,
         drum_fader,
         drum_grid,
+    }
+}
+
+// ── Dual-synth ComputedLayout ────────────────────────────────────────────────
+
+/// Pre-computed layout rects for the dual-synth panel system.
+///
+/// Each panel has two rects: the expanded rect (non-empty when visible) and
+/// the collapsed rect (non-empty when collapsed). They are mutually exclusive —
+/// when one is set the other is `Rect::default()`.
+pub struct DualSynthLayout {
+    pub transport: Rect,
+
+    // Synth A
+    pub synth_a_knobs: Rect,
+    pub synth_a_grid: Rect,
+    pub synth_a_knobs_collapsed: Rect,
+    pub synth_a_grid_collapsed: Rect,
+
+    // Synth B
+    pub synth_b_knobs: Rect,
+    pub synth_b_grid: Rect,
+    pub synth_b_knobs_collapsed: Rect,
+    pub synth_b_grid_collapsed: Rect,
+
+    // Drums
+    pub drum_grid: Rect,
+    pub drum_knobs: Rect,
+    pub drum_knobs_collapsed: Rect,
+
+    // Bottom
+    pub waveform: Rect,
+    pub waveform_collapsed: Rect,
+    pub activity_bar: Rect,
+}
+
+/// Describes a single panel slot in the vertical stack.
+struct PanelSlot {
+    expanded_height: u16,
+    is_visible: bool,
+    /// If true, this panel receives leftover space when other panels collapse.
+    growable: bool,
+}
+
+/// Compute layout for the dual-synth panel system.
+///
+/// Layout order (top to bottom):
+///   Transport | Synth A Knobs | Synth A Grid | Synth B Knobs | Synth B Grid
+///   | Drum Grid | Drum Knobs | Waveform | Activity Bar
+///
+/// Collapsed panels get `COLLAPSED_PANEL_HEIGHT` (2 lines).
+/// Reclaimed vertical space is given to growable panels (drum_grid).
+pub fn compute_dual_layout(total: Rect, vis: &PanelVisibility) -> DualSynthLayout {
+    // Fixed sections: transport at top, activity bar at bottom
+    let fixed = TRANSPORT_HEIGHT + ACTIVITY_BAR_HEIGHT;
+
+    // Define the 7 collapsible panels in order
+    let panels = [
+        PanelSlot { expanded_height: SYNTH_KNOBS_HEIGHT,  is_visible: vis.synth_a_knobs, growable: false },
+        PanelSlot { expanded_height: SYNTH_GRID_HEIGHT,   is_visible: vis.synth_a_grid,  growable: false },
+        PanelSlot { expanded_height: SYNTH_KNOBS_HEIGHT,  is_visible: vis.synth_b_knobs, growable: false },
+        PanelSlot { expanded_height: SYNTH_GRID_HEIGHT,   is_visible: vis.synth_b_grid,  growable: false },
+        PanelSlot { expanded_height: DRUM_GRID_MIN_HEIGHT, is_visible: vis.drum_grid,    growable: true  },
+        PanelSlot { expanded_height: DRUM_KNOBS_HEIGHT,   is_visible: vis.drum_knobs,    growable: false },
+        PanelSlot { expanded_height: WAVEFORM_HEIGHT,     is_visible: vis.waveform,      growable: false },
+    ];
+
+    // Calculate total requested height (before overflow handling)
+    let mut used: u16 = fixed;
+    for p in &panels {
+        if p.is_visible {
+            used = used.saturating_add(p.expanded_height);
+        } else {
+            used = used.saturating_add(COLLAPSED_PANEL_HEIGHT);
+        }
+    }
+
+    // Compute extra space to distribute to growable panels
+    let available = total.height;
+    let extra = if available > used { available - used } else { 0 };
+
+    // Count growable visible panels
+    let growable_count = panels.iter().filter(|p| p.is_visible && p.growable).count() as u16;
+    let extra_per_growable = if growable_count > 0 { extra / growable_count } else { 0 };
+    let mut extra_remainder = if growable_count > 0 { extra % growable_count } else { 0 };
+
+    // Assign heights for each panel
+    let mut heights: [u16; 7] = [0; 7];
+    for (i, p) in panels.iter().enumerate() {
+        if p.is_visible {
+            heights[i] = p.expanded_height;
+            if p.growable {
+                heights[i] += extra_per_growable;
+                if extra_remainder > 0 {
+                    heights[i] += 1;
+                    extra_remainder -= 1;
+                }
+            }
+        } else {
+            heights[i] = COLLAPSED_PANEL_HEIGHT;
+        }
+    }
+
+    // Build rects by walking y offsets
+    let x = total.x;
+    let w = total.width;
+    let mut y = total.y;
+
+    // Transport
+    let transport = Rect::new(x, y, w, TRANSPORT_HEIGHT);
+    y += TRANSPORT_HEIGHT;
+
+    // Helper: allocate a panel rect and advance y
+    let mut panel_rects: [(Rect, Rect); 7] = [(Rect::default(), Rect::default()); 7];
+    for (i, p) in panels.iter().enumerate() {
+        let h = heights[i];
+        let rect = Rect::new(x, y, w, h);
+        if p.is_visible {
+            panel_rects[i] = (rect, Rect::default()); // expanded, no collapsed
+        } else {
+            panel_rects[i] = (Rect::default(), rect); // no expanded, collapsed
+        }
+        y += h;
+    }
+
+    // Activity bar at the bottom
+    let activity_bar = Rect::new(x, y, w, ACTIVITY_BAR_HEIGHT);
+
+    DualSynthLayout {
+        transport,
+
+        synth_a_knobs:           panel_rects[0].0,
+        synth_a_knobs_collapsed: panel_rects[0].1,
+        synth_a_grid:            panel_rects[1].0,
+        synth_a_grid_collapsed:  panel_rects[1].1,
+
+        synth_b_knobs:           panel_rects[2].0,
+        synth_b_knobs_collapsed: panel_rects[2].1,
+        synth_b_grid:            panel_rects[3].0,
+        synth_b_grid_collapsed:  panel_rects[3].1,
+
+        drum_grid:               panel_rects[4].0,
+        drum_knobs:              panel_rects[5].0,
+        drum_knobs_collapsed:    panel_rects[5].1,
+
+        waveform:                panel_rects[6].0,
+        waveform_collapsed:      panel_rects[6].1,
+        activity_bar,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::PanelVisibility;
+
+    fn term(h: u16) -> Rect {
+        Rect::new(0, 0, 120, h)
+    }
+
+    #[test]
+    fn all_expanded_fills_terminal() {
+        let vis = PanelVisibility {
+            synth_a_knobs: true,
+            synth_a_grid: true,
+            synth_b_knobs: true,
+            synth_b_grid: true,
+            drum_grid: true,
+            drum_knobs: true,
+            waveform: true,
+        };
+        // Minimum needed: 6 + 30 + 6 + 30 + 6 + 11 + 9 + 11 + 1 = 110
+        let ly = compute_dual_layout(term(110), &vis);
+
+        // Transport and activity bar should be at expected positions
+        assert_eq!(ly.transport.height, TRANSPORT_HEIGHT);
+        assert_eq!(ly.activity_bar.height, ACTIVITY_BAR_HEIGHT);
+        assert_eq!(ly.activity_bar.y + ly.activity_bar.height, 110);
+
+        // All expanded rects should be non-empty
+        assert!(ly.synth_a_knobs.height > 0);
+        assert!(ly.synth_a_grid.height > 0);
+        assert!(ly.synth_b_knobs.height > 0);
+        assert!(ly.synth_b_grid.height > 0);
+        assert!(ly.drum_grid.height > 0);
+        assert!(ly.drum_knobs.height > 0);
+        assert!(ly.waveform.height > 0);
+
+        // All collapsed rects should be empty
+        assert_eq!(ly.synth_a_knobs_collapsed, Rect::default());
+        assert_eq!(ly.synth_b_grid_collapsed, Rect::default());
+        assert_eq!(ly.waveform_collapsed, Rect::default());
+    }
+
+    #[test]
+    fn collapsed_panels_give_space_to_drum_grid() {
+        let vis_expanded = PanelVisibility {
+            synth_a_knobs: true,
+            synth_a_grid: true,
+            synth_b_knobs: true,
+            synth_b_grid: true,
+            drum_grid: true,
+            drum_knobs: true,
+            waveform: true,
+        };
+        let vis_collapsed = PanelVisibility {
+            synth_a_knobs: true,
+            synth_a_grid: true,
+            synth_b_knobs: false,  // collapsed
+            synth_b_grid: false,   // collapsed
+            drum_grid: true,
+            drum_knobs: true,
+            waveform: true,
+        };
+        let h = 120;
+        let ly_exp = compute_dual_layout(term(h), &vis_expanded);
+        let ly_col = compute_dual_layout(term(h), &vis_collapsed);
+
+        // Drum grid should be bigger when synth B is collapsed
+        assert!(ly_col.drum_grid.height > ly_exp.drum_grid.height);
+    }
+
+    #[test]
+    fn collapsed_panel_has_collapsed_rect() {
+        let vis = PanelVisibility {
+            synth_a_knobs: true,
+            synth_a_grid: true,
+            synth_b_knobs: false,
+            synth_b_grid: false,
+            drum_grid: true,
+            drum_knobs: false,
+            waveform: false,
+        };
+        let ly = compute_dual_layout(term(80), &vis);
+
+        // Synth B knobs: expanded empty, collapsed non-empty
+        assert_eq!(ly.synth_b_knobs, Rect::default());
+        assert_eq!(ly.synth_b_knobs_collapsed.height, COLLAPSED_PANEL_HEIGHT);
+
+        // Drum knobs: collapsed
+        assert_eq!(ly.drum_knobs, Rect::default());
+        assert_eq!(ly.drum_knobs_collapsed.height, COLLAPSED_PANEL_HEIGHT);
+
+        // Waveform: collapsed
+        assert_eq!(ly.waveform, Rect::default());
+        assert_eq!(ly.waveform_collapsed.height, COLLAPSED_PANEL_HEIGHT);
+    }
+
+    #[test]
+    fn panels_are_contiguous_vertically() {
+        let vis = PanelVisibility::default();
+        let ly = compute_dual_layout(term(100), &vis);
+
+        // Transport starts at 0
+        assert_eq!(ly.transport.y, 0);
+
+        // Each panel starts where the previous one ends
+        // synth_a_knobs follows transport
+        let after_transport = ly.transport.y + ly.transport.height;
+        let sa_knobs_y = if ly.synth_a_knobs.height > 0 {
+            ly.synth_a_knobs.y
+        } else {
+            ly.synth_a_knobs_collapsed.y
+        };
+        assert_eq!(sa_knobs_y, after_transport);
+    }
+
+    #[test]
+    fn default_visibility_layout() {
+        // Default: synth B collapsed, everything else expanded
+        let vis = PanelVisibility::default();
+        let ly = compute_dual_layout(term(100), &vis);
+
+        assert!(ly.synth_a_knobs.height > 0);
+        assert!(ly.synth_a_grid.height > 0);
+        assert_eq!(ly.synth_b_knobs, Rect::default());
+        assert_eq!(ly.synth_b_grid, Rect::default());
+        assert!(ly.synth_b_knobs_collapsed.height > 0);
+        assert!(ly.synth_b_grid_collapsed.height > 0);
+        assert!(ly.drum_grid.height > 0);
+        assert!(ly.drum_knobs.height > 0);
+        assert!(ly.waveform.height > 0);
     }
 }
