@@ -419,6 +419,31 @@ pub struct StatusMessage {
     pub frames_remaining: u16,
 }
 
+#[derive(Clone, Debug)]
+pub struct PanelVisibility {
+    pub synth_a_knobs: bool,
+    pub synth_a_grid: bool,
+    pub synth_b_knobs: bool,
+    pub synth_b_grid: bool,
+    pub drum_grid: bool,
+    pub drum_knobs: bool,
+    pub waveform: bool,
+}
+
+impl Default for PanelVisibility {
+    fn default() -> Self {
+        Self {
+            synth_a_knobs: true,
+            synth_a_grid: true,
+            synth_b_knobs: false,  // Synth B collapsed by default
+            synth_b_grid: false,
+            drum_grid: true,
+            drum_knobs: true,
+            waveform: true,
+        }
+    }
+}
+
 pub struct UiState {
     pub splash: SplashState,
     pub focus: FocusSection,
@@ -433,6 +458,7 @@ pub struct UiState {
     pub show_help: bool,
     pub show_waveform: bool,
     pub synth_collapsed: bool,
+    pub panel_vis: PanelVisibility,
     /// Per-track trigger flash countdown (> 0 means flashing)
     pub trigger_flash: [u8; NUM_DRUM_TRACKS],
     /// Current active pattern index (0-9)
@@ -499,6 +525,7 @@ impl Default for UiState {
             show_help: false,
             show_waveform: true,
             synth_collapsed: false,
+            panel_vis: PanelVisibility::default(),
             trigger_flash: [0; NUM_DRUM_TRACKS],
             active_pattern: 0,
             queued_pattern: None,
