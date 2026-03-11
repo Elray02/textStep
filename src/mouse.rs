@@ -448,7 +448,7 @@ fn hit_test_synth_knobs(col: u16, row: u16, knobs_area: Rect) -> Option<SynthCon
         .constraints([
             Constraint::Length(8),  // OSC1 + OSC2
             Constraint::Length(8),  // ENV1 + ENV2 + FILT
-            Constraint::Min(7),    // AMP (left) + LFO (right)
+            Constraint::Min(7),    // AMP (left) + LFO1/LFO2 stacked (right)
         ])
         .split(inner);
 
@@ -526,13 +526,13 @@ fn hit_test_synth_knobs(col: u16, row: u16, knobs_area: Rect) -> Option<SynthCon
         return None;
     }
 
-    // ── Row group 2: AMP (left) + LFO (right) ─────────────────────────────
+    // ── Row group 2: AMP (left) + LFO1/LFO2 stacked (right) ──────────
     if hit_test_area(col, row, row_groups[2]) {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Percentage(50), // AMP
-                Constraint::Percentage(50), // LFO
+                Constraint::Percentage(50), // LFO1 + LFO2 stacked
             ])
             .split(row_groups[2]);
 
@@ -559,19 +559,44 @@ fn hit_test_synth_knobs(col: u16, row: u16, knobs_area: Rect) -> Option<SynthCon
             }
             return Some(SynthControlField::Volume);
         } else if hit_test_area(col, row, cols[1]) {
-            // LFO
-            let col_width = cols[1].width as usize / 4;
-            if col_width > 0 {
-                let rel_x = (col - cols[1].x) as usize;
-                let idx = (rel_x / col_width).min(3);
-                return match idx {
-                    0 => Some(SynthControlField::LfoWaveform),
-                    1 => Some(SynthControlField::LfoDivision),
-                    2 => Some(SynthControlField::LfoDepth),
-                    _ => Some(SynthControlField::LfoDest),
-                };
+            // LFO1 + LFO2 stacked
+            let lfo_rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3), // LFO1
+                    Constraint::Min(3),   // LFO2
+                ])
+                .split(cols[1]);
+
+            if hit_test_area(col, row, lfo_rows[0]) {
+                // LFO1
+                let col_width = lfo_rows[0].width as usize / 4;
+                if col_width > 0 {
+                    let rel_x = (col - lfo_rows[0].x) as usize;
+                    let idx = (rel_x / col_width).min(3);
+                    return match idx {
+                        0 => Some(SynthControlField::LfoWaveform),
+                        1 => Some(SynthControlField::LfoDivision),
+                        2 => Some(SynthControlField::LfoDepth),
+                        _ => Some(SynthControlField::LfoDest),
+                    };
+                }
+                return Some(SynthControlField::LfoWaveform);
+            } else if hit_test_area(col, row, lfo_rows[1]) {
+                // LFO2
+                let col_width = lfo_rows[1].width as usize / 4;
+                if col_width > 0 {
+                    let rel_x = (col - lfo_rows[1].x) as usize;
+                    let idx = (rel_x / col_width).min(3);
+                    return match idx {
+                        0 => Some(SynthControlField::Lfo2Waveform),
+                        1 => Some(SynthControlField::Lfo2Division),
+                        2 => Some(SynthControlField::Lfo2Depth),
+                        _ => Some(SynthControlField::Lfo2Dest),
+                    };
+                }
+                return Some(SynthControlField::Lfo2Waveform);
             }
-            return Some(SynthControlField::LfoWaveform);
         }
     }
 
@@ -614,7 +639,16 @@ fn handle_synth_knobs_click(app: &mut App, synth_id: SynthId, field: SynthContro
 
     // For enum fields, just cycle on click instead of drag
     if field.is_enum() {
-        let max_val: u8 = if field == SynthControlField::FilterType { 2 } else { 3 };
+        let max_val: u8 = match field {
+            SynthControlField::FilterType => 2,
+            SynthControlField::LfoWaveform | SynthControlField::Lfo2Waveform =>
+                (crate::sequencer::synth_pattern::NUM_LFO_WAVEFORMS - 1),
+            SynthControlField::LfoDivision | SynthControlField::Lfo2Division =>
+                (crate::sequencer::synth_pattern::LFO_DIVISIONS.len() - 1) as u8,
+            SynthControlField::LfoDest | SynthControlField::Lfo2Dest =>
+                (crate::sequencer::synth_pattern::LFO_DEST_FIELDS.len() - 1) as u8,
+            _ => 3, // Osc1/Osc2 waveforms
+        };
         let cur = field.get(&pattern.params);
         let cur_int = (cur * max_val as f32).round() as u8;
         let new_int = (cur_int + 1) % (max_val + 1);
