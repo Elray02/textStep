@@ -962,6 +962,62 @@ impl App {
         self.send_synth_pattern();
     }
 
+    // ── Focus-aware synth helpers (dual synth) ─────────────────────────
+
+    /// Switch to a different synth pattern for the specified synth.
+    pub fn switch_synth_pattern_for(&mut self, synth_id: SynthId, index: usize) {
+        if index >= NUM_PATTERNS { return; }
+        match synth_id {
+            SynthId::A => {
+                self.project.save_synth_pattern(self.ui.synth_a.active_pattern, &self.synth_a_pattern);
+                self.ui.synth_a.active_pattern = index;
+                self.project.active_synth_pattern = index;
+                self.synth_a_pattern = SynthPattern::default();
+                self.project.load_synth_pattern(index, &mut self.synth_a_pattern);
+                self.send_synth_pattern();
+            }
+            SynthId::B => {
+                // For synth B, use synth_b_pattern (project B storage is a future task)
+                self.ui.synth_b.active_pattern = index;
+                self.synth_b_pattern = SynthPattern::default();
+                self.send_synth_b_pattern();
+            }
+        }
+    }
+
+    /// Queue a synth pattern for the specified synth.
+    pub fn queue_synth_pattern_for(&mut self, synth_id: SynthId, index: usize) {
+        if index >= NUM_PATTERNS { return; }
+        let ui = match synth_id {
+            SynthId::A => &mut self.ui.synth_a,
+            SynthId::B => &mut self.ui.synth_b,
+        };
+        if index == ui.active_pattern {
+            ui.queued_pattern = None;
+        } else {
+            ui.queued_pattern = Some(index);
+        }
+    }
+
+    /// Switch to a different synth kit for the specified synth.
+    pub fn switch_synth_kit_for(&mut self, synth_id: SynthId, index: usize) {
+        if index >= NUM_KITS { return; }
+        match synth_id {
+            SynthId::A => {
+                self.project.save_synth_kit(self.ui.synth_a.active_kit, &self.synth_a_pattern.params);
+                self.ui.synth_a.active_kit = index;
+                self.project.active_synth_kit = index;
+                self.project.load_synth_kit(index, &mut self.synth_a_pattern);
+                self.send_synth_pattern();
+            }
+            SynthId::B => {
+                // For synth B, just update UI state (project B storage is a future task)
+                self.ui.synth_b.active_kit = index;
+                self.send_synth_b_pattern();
+            }
+        }
+    }
+
     /// Show a brief status message.
     pub fn show_status(&mut self, text: String) {
         self.ui.status_msg = Some(StatusMessage {
