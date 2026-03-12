@@ -135,6 +135,7 @@ pub struct AudioEngine {
     drum_reverb: ReverbEffect,
     drum_delay: DelayEffect,
     compressor: GlueCompressor,
+    crush_compressor: GlueCompressor, // parallel "New York" compression
     drum_saturator: TubeSaturator,
     effect_params: EffectParams,
 
@@ -162,6 +163,8 @@ impl AudioEngine {
         );
 
         let compressor = GlueCompressor::new(sample_rate);
+        let mut crush_compressor = GlueCompressor::new(sample_rate);
+        crush_compressor.set_amount(1.0, sample_rate); // always heavy
         let drum_saturator = TubeSaturator::new(sample_rate as f32);
 
         Self {
@@ -177,6 +180,7 @@ impl AudioEngine {
             drum_reverb,
             drum_delay,
             compressor,
+            crush_compressor,
             drum_saturator,
             effect_params,
             display_buf,
@@ -567,12 +571,19 @@ impl AudioEngine {
             let mono_wet = synth_a_out * gain_a + synth_b_out * gain_b + reverb_out + delay_out;
             let mixed_l = (drum_sat_l + mono_wet) * 0.5 * self.master_volume;
             let mixed_r = (drum_sat_r + mono_wet) * 0.5 * self.master_volume;
-            // Linked stereo compression: detect from mono sum, apply gain to both channels
+            // Linked stereo compression with parallel "crush" bus
             let mono = (mixed_l + mixed_r) * 0.5;
             let compressed = self.compressor.tick(mono);
             let comp_gain = if mono.abs() > 1e-10 { compressed / mono } else { 1.0 };
-            let out_l = soft_clip(mixed_l * comp_gain);
-            let out_r = soft_clip(mixed_r * comp_gain);
+
+            // Parallel "crush" compression: heavily compressed copy blended at 30%
+            // Adds body and sustain without killing transients (New York compression)
+            let crush = self.crush_compressor.tick(mono);
+            let crush_gain = if mono.abs() > 1e-10 { crush / mono } else { 1.0 };
+            let parallel_gain = comp_gain + crush_gain * 0.3;
+
+            let out_l = soft_clip(mixed_l * parallel_gain);
+            let out_r = soft_clip(mixed_r * parallel_gain);
 
             frame[0] = out_l;
             if frame.len() > 1 {

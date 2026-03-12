@@ -329,6 +329,10 @@ pub struct GlueCompressor {
     // RMS level detection (exponential moving average of input²)
     rms_sq: f32,
     rms_coeff: f32,
+    // Peak detection (fast attack for transients)
+    peak_level: f32,
+    peak_attack_coeff: f32,
+    peak_release_coeff: f32,
     // Gain smoothing (separate attack/release)
     gain_smooth: f32, // current smoothed gain (linear, not dB)
     attack_coeff: f32,
@@ -347,6 +351,9 @@ impl GlueCompressor {
         let mut comp = Self {
             rms_sq: 0.0,
             rms_coeff: 0.0,
+            peak_level: 0.0,
+            peak_attack_coeff: 0.0,
+            peak_release_coeff: 0.0,
             gain_smooth: 1.0,
             attack_coeff: 0.0,
             release_coeff: 0.0,
@@ -393,6 +400,13 @@ impl GlueCompressor {
         let rms_ms = 10.0;
         self.rms_coeff = (-1.0 / (rms_ms * 0.001 * sample_rate)).exp() as f32;
 
+        // Peak detector: very fast attack (0.1ms), moderate release (5ms)
+        // Catches transients that RMS misses
+        let peak_attack_ms = 0.1;
+        self.peak_attack_coeff = (-1.0 / (peak_attack_ms * 0.001 * sample_rate)).exp() as f32;
+        let peak_release_ms = 5.0;
+        self.peak_release_coeff = (-1.0 / (peak_release_ms * 0.001 * sample_rate)).exp() as f32;
+
         // Auto makeup gain: approximate the average gain reduction
         // At threshold with the given ratio, max GR ≈ threshold * (1 - 1/ratio)
         // We compensate for roughly half of that (sounds natural)
@@ -413,8 +427,23 @@ impl GlueCompressor {
         // Convert RMS to dB (with floor to avoid log(0))
         let rms_db = linear_to_db(self.rms_sq.sqrt().max(1e-10));
 
+        // Peak detection (envelope follower)
+        let abs_input = input.abs();
+        if abs_input > self.peak_level {
+            self.peak_level = self.peak_attack_coeff * self.peak_level
+                + (1.0 - self.peak_attack_coeff) * abs_input;
+        } else {
+            self.peak_level = self.peak_release_coeff * self.peak_level
+                + (1.0 - self.peak_release_coeff) * abs_input;
+        }
+        let peak_db = linear_to_db(self.peak_level.max(1e-10));
+
+        // Use the louder of RMS and peak for detection
+        // Preserves transient response while still compressing sustained signals
+        let detect_db = rms_db.max(peak_db);
+
         // Gain computation with soft knee
-        let gain_db = compute_gain_db(rms_db, self.threshold_db, self.ratio, self.knee_db);
+        let gain_db = compute_gain_db(detect_db, self.threshold_db, self.ratio, self.knee_db);
 
         // Convert to linear gain
         let target_gain = db_to_linear(gain_db);
@@ -595,6 +624,31 @@ mod tests {
         let mut p = RampedParam::new(0.5);
         assert!((p.next() - 0.5).abs() < 1e-6);
         assert!((p.next() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compressor_tames_peaks() {
+        let sr = 48000.0;
+        let mut comp = GlueCompressor::new(sr);
+        comp.set_amount(0.7, sr);
+        let loud = 0.9_f32;
+        let mut out = 0.0;
+        // Need enough samples for RMS + peak detector to respond
+        for _ in 0..2000 {
+            out = comp.tick(loud);
+        }
+        assert!(out < loud, "Compressed output {} should be less than input {}", out, loud);
+        assert!(out > 0.0);
+    }
+
+    #[test]
+    fn test_compressor_bypass() {
+        let sr = 48000.0;
+        let mut comp = GlueCompressor::new(sr);
+        comp.set_amount(0.0, sr);
+        let input = 0.5;
+        let out = comp.tick(input);
+        assert!((out - input).abs() < 1e-6);
     }
 
     #[test]
