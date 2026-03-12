@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::params::EffectParams;
+use crate::presets::pattern_presets;
+use crate::presets::synth_presets;
+use crate::presets::synth_pattern_presets;
 use crate::sequencer::drum_pattern::{
     DrumTrackParams, DrumTrackId, MAX_STEPS, NUM_DRUM_TRACKS, TRACK_IDS,
 };
@@ -501,170 +504,35 @@ impl Default for ProjectFile {
     }
 }
 
+fn pattern_from_preset(name: &str, display_name: &str, bpm: f64) -> PatternData {
+    if let Some(preset) = pattern_presets::preset_by_name(name) {
+        PatternData {
+            name: display_name.to_string(),
+            bpm,
+            steps: preset.steps.iter().map(|s| s.to_string()).collect(),
+        }
+    } else {
+        PatternData {
+            name: display_name.to_string(),
+            bpm,
+            steps: vec!["00000000".into(); NUM_DRUM_TRACKS],
+        }
+    }
+}
+
 /// Create a demo project with 10 pre-filled genre patterns from classic drum programming.
 pub fn demo_project() -> ProjectFile {
     let patterns = vec![
-        // 1. House (125 BPM)
-        // Kick: four-on-the-floor | Snare: beat 3 | CHH: 16ths except offbeats
-        // OHH: offbeat 16ths + running 16ths on beat 4 | Tom: beat 2 accent
-        PatternData {
-            name: "House".into(),
-            bpm: 125.0,
-            steps: vec![
-                "88880000".into(), // Kick:  0,4,8,12
-                "00800000".into(), // Snare: 8
-                "eee00000".into(), // CHH:   0,1,2,4,5,6,8,9,10
-                "111f0000".into(), // OHH:   3,7,11,12,13,14,15
-                "00000000".into(), // Ride
-                "00000000".into(), // Clap
-                "00000000".into(), // Cowbell
-                "08000000".into(), // Tom:   4
-            ],
-        },
-        // 2. Chicago House (122 BPM)
-        // Kick with upbeat anticipation | Snare on 2&4 | Paired CHH/OHH | Clap on 2&4
-        PatternData {
-            name: "Chicago House".into(),
-            bpm: 122.0,
-            steps: vec![
-                "88820000".into(), // Kick:  0,4,8,14
-                "08080000".into(), // Snare: 4,12
-                "cccc0000".into(), // CHH:   0,1,4,5,8,9,12,13
-                "33100000".into(), // OHH:   2,3,6,7,11
-                "00000000".into(), // Ride
-                "08080000".into(), // Clap:  4,12
-                "00000000".into(), // Cowbell
-                "00000000".into(), // Tom
-            ],
-        },
-        // 3. Brit House (122 BPM)
-        // Syncopated kick | CHH/OHH like House | Clap on beat 3 | Ride accents
-        PatternData {
-            name: "Brit House".into(),
-            bpm: 122.0,
-            steps: vec![
-                "89800000".into(), // Kick:  0,4,7,8
-                "00000000".into(), // Snare
-                "eee00000".into(), // CHH:   0,1,2,4,5,6,8,9,10
-                "111f0000".into(), // OHH:   3,7,11,12,13,14,15
-                "08090000".into(), // Ride:  4,12,15
-                "00800000".into(), // Clap:  8
-                "00000000".into(), // Cowbell
-                "00000000".into(), // Tom
-            ],
-        },
-        // 4. French House (124 BPM)
-        // Funky syncopated kick | Shaker (cowbell) on 8ths | Clap on beat 3
-        PatternData {
-            name: "French House".into(),
-            bpm: 124.0,
-            steps: vec![
-                "98980000".into(), // Kick:    0,3,4,8,11,12
-                "00000000".into(), // Snare
-                "cce00000".into(), // CHH:     0,1,4,5,8,9,10
-                "331f0000".into(), // OHH:     2,3,6,7,11,12,13,14,15
-                "00000000".into(), // Ride
-                "00800000".into(), // Clap:    8
-                "aaa00000".into(), // Cowbell:  0,2,4,6,8,10 (shakers)
-                "00000000".into(), // Tom
-            ],
-        },
-        // 5. Dirty House (126 BPM)
-        // Syncopated kick | Sparse hats | Offbeat claps
-        PatternData {
-            name: "Dirty House".into(),
-            bpm: 126.0,
-            steps: vec![
-                "98880000".into(), // Kick:  0,3,4,8,12
-                "00800000".into(), // Snare: 8
-                "08080000".into(), // CHH:   4,12
-                "02020000".into(), // OHH:   6,14
-                "00000000".into(), // Ride
-                "22200000".into(), // Clap:  2,6,10
-                "00000000".into(), // Cowbell
-                "00000000".into(), // Tom
-            ],
-        },
-        // 6. Trance (138 BPM)
-        // Four-on-the-floor | Dense CHH/OHH pattern | Crash on beat 1
-        PatternData {
-            name: "Trance".into(),
-            bpm: 138.0,
-            steps: vec![
-                "88880000".into(), // Kick:  0,4,8,12
-                "00000000".into(), // Snare
-                "eee00000".into(), // CHH:   0,1,2,4,5,6,8,9,10
-                "111f0000".into(), // OHH:   3,7,11,12,13,14,15
-                "80000000".into(), // Ride:  0 (crash)
-                "00000000".into(), // Clap
-                "00000000".into(), // Cowbell
-                "00000000".into(), // Tom
-            ],
-        },
-        // 7. Techno (130 BPM)
-        // Four-on-the-floor | 8th-note CHH | Offbeat ride | Clap on 2&4
-        PatternData {
-            name: "Techno".into(),
-            bpm: 130.0,
-            steps: vec![
-                "88880000".into(), // Kick:  0,4,8,12
-                "00000000".into(), // Snare
-                "aaaa0000".into(), // CHH:   0,2,4,6,8,10,12,14 (8th notes)
-                "00000000".into(), // OHH
-                "22220000".into(), // Ride:  2,6,10,14 (offbeat 8ths)
-                "08080000".into(), // Clap:  4,12
-                "00000000".into(), // Cowbell
-                "00000000".into(), // Tom
-            ],
-        },
-        // 8. Drum & Bass (170 BPM)
-        // Breakbeat kick pattern | Snare on beat 3 | Dense hats
-        PatternData {
-            name: "Drum & Bass".into(),
-            bpm: 170.0,
-            steps: vec![
-                "80200000".into(), // Kick:  0,10
-                "00800000".into(), // Snare: 8
-                "eee00000".into(), // CHH:   0,1,2,4,5,6,8,9,10
-                "111f0000".into(), // OHH:   3,7,11,12,13,14,15
-                "00000000".into(), // Ride
-                "00000000".into(), // Clap
-                "00000000".into(), // Cowbell
-                "00000000".into(), // Tom
-            ],
-        },
-        // 9. Trap (140 BPM)
-        // Sparse kick with anticipation | Hi-hat rolls | Tom fills
-        PatternData {
-            name: "Trap".into(),
-            bpm: 140.0,
-            steps: vec![
-                "88020000".into(), // Kick:  0,4,14
-                "00800000".into(), // Snare: 8
-                "ffaa0000".into(), // CHH:   0,1,2,3,4,5,6,7,8,10,12,14 (rolls)
-                "00000000".into(), // OHH
-                "00000000".into(), // Ride
-                "00000000".into(), // Clap
-                "00000000".into(), // Cowbell
-                "00210000".into(), // Tom:   10,15
-            ],
-        },
-        // 10. Moombahton (100 BPM)
-        // Dembow-influenced | Snare on 2,3,4 | OHH fills gaps
-        PatternData {
-            name: "Moombahton".into(),
-            bpm: 100.0,
-            steps: vec![
-                "88800000".into(), // Kick:    0,4,8
-                "08880000".into(), // Snare:   4,8,12
-                "eccc0000".into(), // CHH:     0,1,2,4,5,8,9,12,13
-                "13330000".into(), // OHH:     3,6,7,10,11,14,15
-                "80000000".into(), // Ride:    0
-                "00000000".into(), // Clap
-                "00000000".into(), // Cowbell
-                "00000000".into(), // Tom
-            ],
-        },
+        pattern_from_preset("Acid House",      "Acid Techno 138",  138.0),
+        pattern_from_preset("Classic House",   "House 122",        122.0),
+        pattern_from_preset("Deep House",      "Deep House 120",   120.0),
+        pattern_from_preset("Driving Techno",  "Techno 130",       130.0),
+        pattern_from_preset("Lo-Fi Hip Hop",   "Downtempo 85",      85.0),
+        pattern_from_preset("Classic Trance",  "Trance 140",       140.0),
+        pattern_from_preset("Amen Break",      "Drum & Bass 174",  174.0),
+        pattern_from_preset("Electro Funk",    "Electro 128",      128.0),
+        pattern_from_preset("Basic Chain",     "Dub Techno 118",   118.0),
+        pattern_from_preset("Sparse Pulse",    "Ambient 90",        90.0),
     ];
 
     let kits = genre_kits();
@@ -701,7 +569,7 @@ pub fn demo_project() -> ProjectFile {
     ProjectFile {
         textstep: FileHeader::default(),
         metadata: ProjectMetadata {
-            name: "Demo Beats".to_string(),
+            name: "Demo Song".to_string(),
             ..Default::default()
         },
         kit: DrumKit::default(),
@@ -709,7 +577,7 @@ pub fn demo_project() -> ProjectFile {
         active_kit: 0,
         patterns,
         active_pattern: 0,
-        bpm: 125.0,
+        bpm: 138.0,
         loop_length: 16,
         swing: 0.50,
         effects: EffectParams::default(),
