@@ -343,9 +343,9 @@ impl DrumVoiceDsp for KickVoice {
         // Sub-oscillator: one octave below the body fundamental
         self.sub_freq = self.freq_base * 0.5;
         self.sub_phase = 0.0;
-        self.sub_env = 0.7; // slightly quieter than body
-        // Longer decay than body — sub lingers for chest-hitting low-end
-        self.sub_decay = (-5.0_f64 / ((0.15 + p.decay as f64 * 0.5) * self.sr)).exp() as f32;
+        self.sub_env = 0.35; // subtle reinforcement, not overwhelming
+        // Decay tracks body but slightly shorter — support without boom
+        self.sub_decay = (-5.0_f64 / ((0.10 + p.decay as f64 * 0.3) * self.sr)).exp() as f32;
 
         self.drive = p.drive;
         self.active = true;
