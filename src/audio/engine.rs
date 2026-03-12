@@ -8,7 +8,7 @@ use crate::audio::clock::SequencerClock;
 use crate::audio::display_buffer::AudioDisplayBuffer;
 use crate::audio::drum_voice::{create_drum_voices, DrumVoiceDsp};
 use crate::audio::effects::{DelayEffect, GlueCompressor, ReverbEffect, TubeSaturator};
-use crate::audio::mixer::{effective_mute, soft_clip};
+use crate::audio::mixer::{effective_mute, per_track_saturate, soft_clip};
 use crate::audio::synth_voice::SynthVoice;
 use crate::messages::{AudioToUi, SynthId, UiToAudio};
 use crate::params::EffectParams;
@@ -433,7 +433,7 @@ impl AudioEngine {
                 let sample = self.drum_voices[track].tick();
                 if !effective_mute(track, &muted, &soloed) {
                     let p = &self.drum_pattern.params[track];
-                    let voiced = sample * p.volume;
+                    let voiced = per_track_saturate(sample) * p.volume;
                     // Equal-power pan law
                     let pan_angle = p.pan * std::f32::consts::FRAC_PI_2;
                     drum_dry_l += voiced * pan_angle.cos();

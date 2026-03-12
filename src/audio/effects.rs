@@ -1,6 +1,65 @@
 //! Send effects: Schroeder reverb, tempo-synced delay, tube saturator, RMS glue compressor.
 //! Reverb/delay ported from zicbox applyReverb.h with adaptations for Rust.
 
+// ---------------------------------------------------------------------------
+// RampedParam: sample-accurate linear ramp for zipper-free parameter changes
+// ---------------------------------------------------------------------------
+
+/// Sample-accurate linear parameter ramp to prevent zipper noise.
+/// Use for any parameter that changes in real-time (volume, cutoff, etc.).
+#[derive(Clone, Copy, Debug)]
+pub struct RampedParam {
+    current: f32,
+    target: f32,
+    increment: f32,
+    remaining: u32,
+}
+
+impl RampedParam {
+    pub fn new(initial: f32) -> Self {
+        Self {
+            current: initial,
+            target: initial,
+            increment: 0.0,
+            remaining: 0,
+        }
+    }
+
+    /// Set a new target value with a ramp duration in samples.
+    /// For 10ms at 48kHz, use ramp_samples = 480.
+    pub fn set(&mut self, target: f32, ramp_samples: u32) {
+        self.target = target;
+        if ramp_samples <= 1 {
+            self.current = target;
+            self.remaining = 0;
+            self.increment = 0.0;
+        } else {
+            self.increment = (target - self.current) / ramp_samples as f32;
+            self.remaining = ramp_samples;
+        }
+    }
+
+    /// Get the next sample value, advancing the ramp by one step.
+    #[inline]
+    pub fn next(&mut self) -> f32 {
+        if self.remaining > 0 {
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.current = self.target;
+            } else {
+                self.current += self.increment;
+            }
+        }
+        self.current
+    }
+
+    /// Get the current value without advancing.
+    #[inline]
+    pub fn value(&self) -> f32 {
+        self.current
+    }
+}
+
 // Base comb/allpass lengths tuned for 44100 Hz; scaled by sample_rate / 44100.0
 const BASE_COMB_LENGTHS: [usize; 4] = [1117, 1301, 1571, 1787];
 const BASE_ALLPASS_LENGTHS: [usize; 2] = [557, 443];
@@ -504,4 +563,49 @@ fn db_to_linear(db: f32) -> f32 {
 #[inline]
 fn linear_to_db(linear: f32) -> f32 {
     20.0 * linear.log10()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ramped_param_instant_set() {
+        let mut p = RampedParam::new(0.0);
+        p.set(1.0, 1);
+        assert!((p.next() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_ramped_param_smooth_ramp() {
+        let mut p = RampedParam::new(0.0);
+        p.set(1.0, 4);
+        let v1 = p.next();
+        let v2 = p.next();
+        let v3 = p.next();
+        let v4 = p.next();
+        assert!(v1 > 0.0 && v1 < 0.5);
+        assert!(v2 > v1);
+        assert!(v3 > v2);
+        assert!((v4 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_ramped_param_stays_at_target() {
+        let mut p = RampedParam::new(0.5);
+        assert!((p.next() - 0.5).abs() < 1e-6);
+        assert!((p.next() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_ramped_param_retarget_mid_ramp() {
+        let mut p = RampedParam::new(0.0);
+        p.set(1.0, 100);
+        let _ = p.next();
+        p.set(0.0, 100);
+        let v1 = p.next();
+        let v2 = p.next();
+        assert!(v2 < v1);
+    }
+
 }
