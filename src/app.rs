@@ -635,48 +635,27 @@ impl App {
             }
         }
 
+        // Load synth patterns and kits from project
         let mut synth_a_pattern = SynthPattern::default();
+        project.load_synth_pattern(0, &mut synth_a_pattern);
+        project.load_synth_kit(0, &mut synth_a_pattern);
 
-        // Load startup presets: "Four on the Floor" drum + "Techno 2" synth
-        {
-            use crate::presets::pattern_presets::PATTERN_PRESETS;
-            use crate::presets::synth_pattern_presets::SYNTH_PATTERN_PRESETS;
-            use crate::sequencer::project::hex_to_steps;
-
-            if let Some(preset) = PATTERN_PRESETS.iter().find(|p| p.name == "Four on the Floor") {
-                for (track, hex) in preset.steps.iter().enumerate() {
-                    let src = hex_to_steps(hex);
-                    // Find effective source length, rounded to 8-step boundary
-                    let src_len = src.iter().rposition(|&s| s).map_or(16, |i| {
-                        ((i / 8) + 1) * 8
-                    }).min(crate::sequencer::drum_pattern::MAX_STEPS);
-                    // Tile to fill all 32 steps
-                    for s in 0..crate::sequencer::drum_pattern::MAX_STEPS {
-                        drum_pattern.steps[track][s] = src[s % src_len];
-                    }
-                }
-            }
-
-            if let Some(preset) = SYNTH_PATTERN_PRESETS.iter().find(|p| p.name == "Techno 2") {
-                for (i, &(note, vel, len)) in preset.steps.iter().enumerate() {
-                    synth_a_pattern.steps[i].note = note;
-                    synth_a_pattern.steps[i].velocity = vel;
-                    synth_a_pattern.steps[i].length = len;
-                }
-            }
-        }
+        let mut synth_b_pattern = SynthPattern::default();
+        project.load_synth_b_pattern(0, &mut synth_b_pattern);
+        project.load_synth_b_kit(0, &mut synth_b_pattern);
 
         // Send initial state to audio thread so it has the pattern from the start
         let _ = tx.send(UiToAudio::SetTransport(transport));
         let _ = tx.send(UiToAudio::SetDrumPattern(drum_pattern.clone()));
         let _ = tx.send(UiToAudio::SetSynthPattern(SynthId::A, synth_a_pattern.clone()));
+        let _ = tx.send(UiToAudio::SetSynthPattern(SynthId::B, synth_b_pattern.clone()));
 
         Self {
             ui: UiState::default(),
             transport,
             drum_pattern,
             synth_a_pattern,
-            synth_b_pattern: SynthPattern::default(),
+            synth_b_pattern,
             effect_params: EffectParams::default(),
             project,
             project_path: None,
