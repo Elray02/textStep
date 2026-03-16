@@ -26,7 +26,7 @@ pub struct EffectParams {
 }
 
 fn default_master_volume() -> f32 { 0.8 }
-fn default_drum_volume() -> f32 { 0.8 }
+fn default_drum_volume() -> f32 { 1.0 }
 fn default_crossfader() -> f32 { 0.5 }
 
 impl Default for EffectParams {
@@ -41,7 +41,7 @@ impl Default for EffectParams {
             master_volume: 0.8,
             drum_saturator_drive: 0.0,
             synth_saturator_drive: 0.0,
-            drum_volume: 0.8,
+            drum_volume: 1.0,
             crossfader: 0.5,
         }
     }
