@@ -24,7 +24,7 @@
 ## ✨ Features
 
 - 🥁 **8 Drum Tracks** — Kick, Snare, Closed HiHat, Open HiHat, Ride, Clap, Cowbell, Tom — each fully synthesized with 8 tweakable sound parameters
-- 🎹 **Dual Polyphonic Synths** — Synth A + Synth B with DJ-style crossfader, each with 2 oscillators + sub, 2 ADSR envelopes, resonant filter, dual LFOs with 6 waveforms, independent patterns and kits
+- 🎹 **Dual Polyphonic Synths** — Synth A + Synth B with DJ-style crossfader, each with 2 oscillators (4-voice supersaw) + selectable sub, portamento, osc sync, 2 ADSR envelopes, resonant filter with key follow, dual LFOs with 6 waveforms, independent patterns and kits
 - 🔲 **32-Step Sequencer** — 10 patterns and 8 kit slots with per-pattern BPM and swing
 - 🎬 **16 Scene Slots** — snapshot and recall full instrument states (all patterns, kits, BPM, swing) with queued or immediate switching
 - 🔊 **Pro Audio Engine** — FDN reverb (8-line stereo), tempo-synced delay, 2×-oversampled tube saturator, SSL-style glue compressor, lookahead limiter, sidechain compression (kick ducks synths)
@@ -224,8 +224,8 @@ Communication is lock-free via bounded crossbeam channels. The audio thread neve
 
 Every sound is synthesized in real-time with no external DSP dependencies:
 
-- **Drum voices** — TR-808/909-inspired kicks (sine + pitch envelope + resonant impulse), noise-blended snares, 6-oscillator metallic banks for hats and rides (Mutable Instruments Plaits-style inharmonic ratios), ring-modulated open hats, bandpass claps, detuned pulse cowbells, FM toms
-- **Synth voice** — dual PolyBLEP anti-aliased oscillators, sub, noise, two ADSR envelopes, resonant SVF filter, 6-waveform LFO
+- **Drum voices** — TR-808/909-inspired kicks (dual-stage pitch envelope, bridged-T BP/LP click blend, subharmonic at octave below, asymmetric drive saturation), noise-blended snares with comb filter, 6-oscillator metallic banks for hats and rides (Mutable Instruments Plaits-style inharmonic ratios), ring-modulated open hats, bandpass claps, detuned pulse cowbells, FM toms
+- **Synth voice** — dual PolyBLEP anti-aliased oscillators (4-voice supersaw), selectable sub waveform (square/sine/saw), noise, two ADSR envelopes, resonant SVF filter with key follow, portamento/glide, oscillator hard sync, dual 6-waveform tempo-synced LFOs
 - **Effects** — 8-line FDN reverb with Householder feedback matrix (native stereo), tempo-synced filtered delay, 2×-oversampled asymmetric tube saturator, feedforward RMS glue compressor with soft knee, true-peak lookahead limiter, sidechain envelope follower
 - **Primitives** — 1-pole HP/LP filters, state-variable filter, xorshift32 noise, stereo decorrelation
 
@@ -311,6 +311,30 @@ textStep/
 ├── BLUEPRINT.md             # Full technical documentation
 └── LICENSE                  # GPL v2
 ```
+
+## 📋 Changelog
+
+### v2.0.3 — Kick Voice & Synth Engine Improvements
+
+**Kick Voice Realism**
+- Dual-stage pitch envelope (2.5ms fast attack + color-controlled slow stage)
+- Bridged-T network: bandpass/lowpass click blend replacing simple LP impulse
+- Subharmonic at octave below (0.5×) instead of 0.75× — eliminates phase cancellation
+- Asymmetric tanh saturation for drive-dependent even harmonics
+- All 16 kick presets retuned for the new synthesis architecture
+
+**Synth Engine Features**
+- Portamento/glide with exponential pitch smoothing
+- Oscillator hard sync (osc2 → osc1)
+- Selectable sub waveform (square / sine / saw)
+- Filter key follow
+- Wider 4-voice supersaw with PolyBLEP anti-aliasing
+
+**CPU Optimizations**
+- Cached SVF filter coefficients (skip per-sample `tan()` when cutoff unchanged)
+- `fast_exp2` polynomial approximation replacing `powf()` in pitch calculations
+- Incremental O(1) peak tracking in lookahead limiter (full scan only on peak exit)
+- Inactive oscillator skip (zero-cost when osc2/sub level is 0)
 
 ## 🤝 Contributing
 
