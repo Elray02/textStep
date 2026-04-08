@@ -818,49 +818,36 @@ fn handle_knobs(app: &mut App, key: KeyEvent) {
     let has_alt = key.modifiers.contains(KeyModifiers::ALT);
 
     match key.code {
+        KeyCode::Left if has_shift => {
+            // Shift+Left: change track up
+            app.ui.drum_ctrl_track = if t == 0 { NUM_DRUM_TRACKS - 1 } else { t - 1 };
+            app.ui.drum_cursor_track = app.ui.drum_ctrl_track;
+        }
+        KeyCode::Right if has_shift => {
+            // Shift+Right: change track down
+            app.ui.drum_ctrl_track = (t + 1) % NUM_DRUM_TRACKS;
+            app.ui.drum_cursor_track = app.ui.drum_ctrl_track;
+        }
         KeyCode::Left => {
             app.ui.drum_ctrl_field = app.ui.drum_ctrl_field.prev_knob();
         }
         KeyCode::Right => {
             app.ui.drum_ctrl_field = app.ui.drum_ctrl_field.next_knob();
         }
-        KeyCode::Up if has_shift || has_alt => {
+        KeyCode::Up => {
+            // Up always increases the selected knob value
             adjust_drum_field(app, t, PARAM_INCREMENT);
             if has_alt {
                 let _ = app.tx_to_audio.send(UiToAudio::TriggerDrum(TRACK_IDS[t]));
                 app.ui.flash_track(t);
             }
         }
-        KeyCode::Down if has_shift || has_alt => {
+        KeyCode::Down => {
+            // Down always decreases the selected knob value
             adjust_drum_field(app, t, -PARAM_INCREMENT);
             if has_alt {
                 let _ = app.tx_to_audio.send(UiToAudio::TriggerDrum(TRACK_IDS[t]));
                 app.ui.flash_track(t);
-            }
-        }
-        KeyCode::Up => {
-            // Move between row 1 (0-4) and row 2 (5-9), or change track at edge
-            if let Some(idx) = app.ui.drum_ctrl_field.knob_index() {
-                if idx >= 5 {
-                    // Row 2 -> Row 1 (same column)
-                    app.ui.drum_ctrl_field = crate::app::KNOB_FIELDS[idx - 5];
-                } else {
-                    // Row 1 -> change track up
-                    app.ui.drum_ctrl_track = if t == 0 { NUM_DRUM_TRACKS - 1 } else { t - 1 };
-                    app.ui.drum_cursor_track = app.ui.drum_ctrl_track;
-                }
-            }
-        }
-        KeyCode::Down => {
-            if let Some(idx) = app.ui.drum_ctrl_field.knob_index() {
-                if idx < 5 {
-                    // Row 1 -> Row 2 (same column)
-                    app.ui.drum_ctrl_field = crate::app::KNOB_FIELDS[idx + 5];
-                } else {
-                    // Row 2 -> change track down
-                    app.ui.drum_ctrl_track = (t + 1) % NUM_DRUM_TRACKS;
-                    app.ui.drum_cursor_track = app.ui.drum_ctrl_track;
-                }
             }
         }
         _ => {}
@@ -1051,25 +1038,8 @@ fn handle_synth_controls(app: &mut App, key: KeyEvent, synth_id: SynthId) {
                 ui.ctrl_field = SYNTH_CTRL_ROWS[r][c + 1];
             }
         }
-        KeyCode::Up if has_shift || has_alt => {
-            adjust_synth_field(app, synth_id, PARAM_INCREMENT);
-            if has_alt {
-                let ui = synth_ui_mut(app, synth_id);
-                let note = ui.octave * 12 + 12;
-                ui.flash = 6;
-                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
-            }
-        }
-        KeyCode::Down if has_shift || has_alt => {
-            adjust_synth_field(app, synth_id, -PARAM_INCREMENT);
-            if has_alt {
-                let ui = synth_ui_mut(app, synth_id);
-                let note = ui.octave * 12 + 12;
-                ui.flash = 6;
-                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
-            }
-        }
-        KeyCode::Up => {
+        KeyCode::Up if has_shift => {
+            // Shift+Up: navigate to row above
             let ui = synth_ui_mut(app, synth_id);
             let (r, c) = find_synth_field_pos(ui.ctrl_field);
             if r > 0 {
@@ -1078,13 +1048,34 @@ fn handle_synth_controls(app: &mut App, key: KeyEvent, synth_id: SynthId) {
                 ui.ctrl_field = new_row[new_c];
             }
         }
-        KeyCode::Down => {
+        KeyCode::Down if has_shift => {
+            // Shift+Down: navigate to row below
             let ui = synth_ui_mut(app, synth_id);
             let (r, c) = find_synth_field_pos(ui.ctrl_field);
             if r + 1 < SYNTH_CTRL_ROWS.len() {
                 let new_row = &SYNTH_CTRL_ROWS[r + 1];
                 let new_c = c.min(new_row.len() - 1);
                 ui.ctrl_field = new_row[new_c];
+            }
+        }
+        KeyCode::Up => {
+            // Up always increases the selected control's value
+            adjust_synth_field(app, synth_id, PARAM_INCREMENT);
+            if has_alt {
+                let ui = synth_ui_mut(app, synth_id);
+                let note = ui.octave * 12 + 12;
+                ui.flash = 6;
+                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
+            }
+        }
+        KeyCode::Down => {
+            // Down always decreases the selected control's value
+            adjust_synth_field(app, synth_id, -PARAM_INCREMENT);
+            if has_alt {
+                let ui = synth_ui_mut(app, synth_id);
+                let note = ui.octave * 12 + 12;
+                ui.flash = 6;
+                let _ = app.tx_to_audio.send(UiToAudio::TriggerSynth(synth_id, note));
             }
         }
         _ => {}
