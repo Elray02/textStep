@@ -145,9 +145,9 @@ impl StateVariableFilter {
     /// Compute cutoff and feedback coefficients from frequency, resonance, and sample rate.
     /// `freq` in Hz, `resonance` in 0.0..1.0, `sr` in Hz.
     fn set_freq(&mut self, freq: f32, resonance: f32, sr: f64) {
-        // Map frequency to 0..1 normalised cutoff
-        let norm = (freq as f64 / sr).min(0.45) as f32; // Nyquist guard
-        // The SVF cutoff coefficient (clamped for stability)
+        // Map frequency to 0..1 normalised cutoff (explicit f64 → f32)
+        let norm: f32 = ((freq as f64 / sr).min(0.45)) as f32; // Nyquist guard
+                                                               // The SVF cutoff coefficient (clamped for stability)
         self.cutoff = (2.0 * norm).clamp(0.0, 0.9);
         // Feedback from resonance (ported from zicbox getFeedback)
         if resonance <= 0.0 || self.cutoff >= 1.0 {
@@ -253,30 +253,30 @@ pub struct KickVoice {
     sr: f64,
     // Path A: sine oscillator with dual-stage pitch envelope
     phase: f64,
-    freq_base: f32,         // fundamental (tune)
-    freq_start: f32,        // initial pitch (fundamental + sweep)
-    pitch_env: f32,         // 1→0 pitch envelope
-    pitch_decay: f32,       // per-sample pitch env decay coefficient (current stage)
-    pitch_decay_fast: f32,  // stage-1 coefficient (~2-3ms, always fast)
-    pitch_decay_slow: f32,  // stage-2 coefficient (controlled by color)
-    pitch_stage2: bool,     // true once stage-1 envelope drops below threshold
-    body_env: f32,          // body amplitude envelope
-    body_decay: f32,        // per-sample body env decay
+    freq_base: f32,        // fundamental (tune)
+    freq_start: f32,       // initial pitch (fundamental + sweep)
+    pitch_env: f32,        // 1→0 pitch envelope
+    pitch_decay: f32,      // per-sample pitch env decay coefficient (current stage)
+    pitch_decay_fast: f32, // stage-1 coefficient (~2-3ms, always fast)
+    pitch_decay_slow: f32, // stage-2 coefficient (controlled by color)
+    pitch_stage2: bool,    // true once stage-1 envelope drops below threshold
+    body_env: f32,         // body amplitude envelope
+    body_decay: f32,       // per-sample body env decay
     // Body LP filter
     body_lp: OnePoleLP,
     // Attack ramp: ~0.5ms linear rise to avoid DC click at onset
     sample_count: u32,
     attack_samples: u32,
     // Path B: click impulse → resonant BP/LP filter
-    click_env: f32,         // click amplitude envelope (fixed short decay)
+    click_env: f32, // click amplitude envelope (fixed short decay)
     click_decay: f32,
-    click_level: f32,       // overall click amplitude (snap)
-    click_pulse_phase: f64, // low-freq square wave for impulse
+    click_level: f32,               // overall click amplitude (snap)
+    click_pulse_phase: f64,         // low-freq square wave for impulse
     click_svf: StateVariableFilter, // resonant filter at ~5kHz
     //
     noise: Noise,
     drive: f32,
-    color: f32,  // cached for tick(): timbre morph (dark/subby → bright/snappy)
+    color: f32, // cached for tick(): timbre morph (dark/subby → bright/snappy)
     active: bool,
     // Subharmonic: one octave below (0.5×) for phase-coherent low-end
     sub_phase: f64,
@@ -369,7 +369,8 @@ impl DrumVoiceDsp for KickVoice {
         //   Resonance also increases with color for more "ping"
         let click_filter_freq = 2000.0 + p.color * 5000.0 + p.snap * 1000.0;
         let click_reso = 0.10 + p.color * 0.20;
-        self.click_svf.set_freq(click_filter_freq, click_reso, self.sr);
+        self.click_svf
+            .set_freq(click_filter_freq, click_reso, self.sr);
         self.click_svf.reset();
 
         // ── Path C: subharmonic (one octave below for phase-coherent low-end) ──
@@ -433,7 +434,11 @@ impl DrumVoiceDsp for KickVoice {
         // Impulse: low-frequency square wave (~30 Hz) — essentially a DC pulse
         // for the first half-cycle, producing a short positive impulse
         self.click_pulse_phase += 30.0_f64 / self.sr;
-        let impulse = if self.click_pulse_phase < 0.5 { 1.0_f32 } else { 0.0 };
+        let impulse = if self.click_pulse_phase < 0.5 {
+            1.0_f32
+        } else {
+            0.0
+        };
 
         // Add a tiny bit of noise for texture
         let click_raw = impulse + self.noise.next() * 0.15;
@@ -840,8 +845,8 @@ pub struct OpenHiHatVoice {
     // 6-oscillator metallic bank (used as ring modulator carrier)
     phases: [f32; 6],
     base_freq: f32,
-    pm_depth: f32,        // phase modulation depth between oscillators
-    ring_mod_depth: f32,  // how much metallic coloring vs pure noise
+    pm_depth: f32,       // phase modulation depth between oscillators
+    ring_mod_depth: f32, // how much metallic coloring vs pure noise
     // Noise
     noise: Noise,
     noise_rng: Noise,
@@ -1194,8 +1199,7 @@ impl DrumVoiceDsp for RideVoice {
         let mut last_sig = 0.0_f32;
 
         for i in 0..6 {
-            let freq = self.base_freq * CYMBAL_RATIOS[i]
-                + (i as f32) * self.inharmonicity;
+            let freq = self.base_freq * CYMBAL_RATIOS[i] + (i as f32) * self.inharmonicity;
 
             // Cross-FM: previous oscillator modulates this one's phase
             let fm_offset = last_sig * self.fm_intensity;
@@ -1205,7 +1209,11 @@ impl DrumVoiceDsp for RideVoice {
             }
 
             // Square wave: just sign of phase (TR-808 style, very cheap)
-            let sig = if self.phases[i] > 0.5 { 1.0_f32 } else { -1.0_f32 };
+            let sig = if self.phases[i] > 0.5 {
+                1.0_f32
+            } else {
+                -1.0_f32
+            };
             last_sig = sig;
 
             // Alternate add/multiply for ring-mod-like density (FreakHat approach)
@@ -1335,8 +1343,7 @@ impl DrumVoiceDsp for ClapVoice {
     fn trigger(&mut self, p: &DrumTrackParams) {
         // tune: BPF center frequency (800-4000 Hz)
         let center = 800.0 + p.tune * 3200.0;
-        self.svf_cutoff =
-            (2.0 * (std::f64::consts::PI * center as f64 / self.sr).sin()) as f32;
+        self.svf_cutoff = (2.0 * (std::f64::consts::PI * center as f64 / self.sr).sin()) as f32;
         // filter: resonance amount (0 = gentle, 1 = nasal/resonant)
         let reso = p.filter * 0.95;
         self.svf_feedback = reso + reso / (1.0 - self.svf_cutoff).max(0.01);
@@ -1381,8 +1388,7 @@ impl DrumVoiceDsp for ClapVoice {
         // Noise generation with color blend
         let white = self.noise.next();
         self.pink_state += self.pink_lp_coeff * (white - self.pink_state);
-        let mixed_noise =
-            white * (1.0 - self.noise_color) + self.pink_state * self.noise_color;
+        let mixed_noise = white * (1.0 - self.noise_color) + self.pink_state * self.noise_color;
 
         // Inline SVF bandpass
         let hp = mixed_noise - self.svf_buf;
@@ -1523,12 +1529,24 @@ impl DrumVoiceDsp for CowbellVoice {
         }
 
         self.phase1 += self.freq1 as f64 / self.sr;
-        if self.phase1 >= 1.0 { self.phase1 -= 1.0; }
-        let sq1: f32 = if self.phase1 < self.pulse_width as f64 { 1.0 } else { -1.0 };
+        if self.phase1 >= 1.0 {
+            self.phase1 -= 1.0;
+        }
+        let sq1: f32 = if self.phase1 < self.pulse_width as f64 {
+            1.0
+        } else {
+            -1.0
+        };
 
         self.phase2 += self.freq2 as f64 / self.sr;
-        if self.phase2 >= 1.0 { self.phase2 -= 1.0; }
-        let sq2: f32 = if self.phase2 < self.pulse_width as f64 { 1.0 } else { -1.0 };
+        if self.phase2 >= 1.0 {
+            self.phase2 -= 1.0;
+        }
+        let sq2: f32 = if self.phase2 < self.pulse_width as f64 {
+            1.0
+        } else {
+            -1.0
+        };
 
         let snap = self.noise.next() * self.snap_env;
         self.snap_env *= self.snap_decay;
@@ -1673,8 +1691,7 @@ impl DrumVoiceDsp for TomVoice {
         if self.mod_phase >= 1.0 {
             self.mod_phase -= 1.0;
         }
-        let mod_lookup =
-            self.mod_phase + (self.mod_feedback_state * self.fm_feedback_amt) as f64;
+        let mod_lookup = self.mod_phase + (self.mod_feedback_state * self.fm_feedback_amt) as f64;
         let modulator = (mod_lookup * 2.0 * std::f64::consts::PI).sin() as f32;
         self.mod_feedback_state = modulator;
 
@@ -1738,10 +1755,19 @@ mod tests {
 
     fn make_kick_params(sweep: f32, color: f32) -> DrumTrackParams {
         DrumTrackParams {
-            tune: 0.3, sweep, color, snap: 0.45,
-            filter: 0.7, drive: 0.20, decay: 0.45, volume: 0.75,
-            send_reverb: 0.0, send_delay: 0.0, pan: 0.5,
-            mute: false, solo: false,
+            tune: 0.3,
+            sweep,
+            color,
+            snap: 0.45,
+            filter: 0.7,
+            drive: 0.20,
+            decay: 0.45,
+            volume: 0.75,
+            send_reverb: 0.0,
+            send_delay: 0.0,
+            pan: 0.5,
+            mute: false,
+            solo: false,
         }
     }
 
@@ -1763,7 +1789,10 @@ mod tests {
         let hi = generate_kick(1.0, 0.2, 4410);
         let diff = rms_diff(&lo, &hi);
         eprintln!("sweep RMS diff: {diff}");
-        assert!(diff > 0.01, "sweep should change waveform, got RMS diff {diff}");
+        assert!(
+            diff > 0.01,
+            "sweep should change waveform, got RMS diff {diff}"
+        );
     }
 
     #[test]
@@ -1772,7 +1801,10 @@ mod tests {
         let hi = generate_kick(0.6, 1.0, 4410);
         let diff = rms_diff(&lo, &hi);
         eprintln!("color RMS diff: {diff}");
-        assert!(diff > 0.01, "color should change waveform, got RMS diff {diff}");
+        assert!(
+            diff > 0.01,
+            "color should change waveform, got RMS diff {diff}"
+        );
     }
 
     #[test]
@@ -1782,7 +1814,12 @@ mod tests {
         eprintln!("\n--- color=0.0 vs color=1.0 (divergent samples) ---");
         for i in 0..200 {
             if (a[i] - b[i]).abs() > 0.001 {
-                eprintln!("  [{i:3}] c0={:.5} c1={:.5} d={:.5}", a[i], b[i], a[i] - b[i]);
+                eprintln!(
+                    "  [{i:3}] c0={:.5} c1={:.5} d={:.5}",
+                    a[i],
+                    b[i],
+                    a[i] - b[i]
+                );
             }
         }
     }

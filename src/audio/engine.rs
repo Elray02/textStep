@@ -7,13 +7,16 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::audio::clock::SequencerClock;
 use crate::audio::display_buffer::AudioDisplayBuffer;
 use crate::audio::drum_voice::{create_drum_voices, DrumVoiceDsp};
-use crate::audio::effects::{DelayEffect, FdnReverb, GlueCompressor, LookaheadLimiter, ReverbEffect, SidechainEnvelope, TubeSaturator};
+use crate::audio::effects::{
+    DelayEffect, FdnReverb, GlueCompressor, LookaheadLimiter, ReverbEffect, SidechainEnvelope,
+    TubeSaturator,
+};
 use crate::audio::mixer::{effective_mute, per_track_saturate};
 use crate::audio::synth_voice::SynthVoice;
 use crate::messages::{AudioToUi, SynthId, UiToAudio};
 use crate::params::EffectParams;
 use crate::sequencer::drum_pattern::{DrumPattern, DrumTrackId, NUM_DRUM_TRACKS};
-use crate::sequencer::synth_pattern::{SynthPattern, LFO_DEST_FIELDS, lfo_division_multiplier};
+use crate::sequencer::synth_pattern::{lfo_division_multiplier, SynthPattern, LFO_DEST_FIELDS};
 use crate::sequencer::transport::{PlayState, Transport};
 
 /// Tempo-synced global LFO shared across synth voices.
@@ -64,7 +67,11 @@ impl Lfo {
             }
             4 => {
                 // Square
-                if p < 0.5 { 1.0 } else { -1.0 }
+                if p < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
             }
             5 => {
                 // Exponential decay: starts at +1, decays toward -1 each cycle
@@ -95,8 +102,8 @@ impl SynthInstance {
             voice: SynthVoice::new(sample_rate as f32),
             gate_samples: 0,
             note_end_step: None,
-            lfo: Lfo::new(),
-            lfo2: Lfo::new(),
+            lfo: Lfo::new(),  // Independent LFO for synth
+            lfo2: Lfo::new(), // Separate LFO instance for second modulation path
             saturator: TubeSaturator::new(sample_rate as f32),
             reverb: ReverbEffect::new(sample_rate),
             delay: {
@@ -147,7 +154,12 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
-    pub fn new(sample_rate: f64, rx: Receiver<UiToAudio>, tx: Sender<AudioToUi>, display_buf: Arc<AudioDisplayBuffer>) -> Self {
+    pub fn new(
+        sample_rate: f64,
+        rx: Receiver<UiToAudio>,
+        tx: Sender<AudioToUi>,
+        display_buf: Arc<AudioDisplayBuffer>,
+    ) -> Self {
         let effect_params = EffectParams::default();
         let mut drum_reverb = FdnReverb::new(sample_rate);
         let mut drum_delay = DelayEffect::new();
@@ -205,32 +217,41 @@ impl AudioEngine {
                     // Update delay time when BPM changes
                     if bpm_changed {
                         let dt = self.effect_params.delay_time;
-                        self.drum_delay.set_single_knob(dt, self.transport.bpm, self.sample_rate);
-                        self.synth_a.delay.set_single_knob(dt, self.transport.bpm, self.sample_rate);
-                        self.synth_b.delay.set_single_knob(dt, self.transport.bpm, self.sample_rate);
+                        self.drum_delay
+                            .set_single_knob(dt, self.transport.bpm, self.sample_rate);
+                        self.synth_a.delay.set_single_knob(
+                            dt,
+                            self.transport.bpm,
+                            self.sample_rate,
+                        );
+                        self.synth_b.delay.set_single_knob(
+                            dt,
+                            self.transport.bpm,
+                            self.sample_rate,
+                        );
                     }
                 }
                 UiToAudio::SetDrumPattern(p) => {
                     self.drum_pattern = p;
                 }
-                UiToAudio::SetSynthPattern(synth_id, p) => {
-                    match synth_id {
-                        SynthId::A => {
-                            self.synth_a.pattern = p;
-                            self.synth_a.note_end_step = None;
-                        }
-                        SynthId::B => {
-                            self.synth_b.pattern = p;
-                            self.synth_b.note_end_step = None;
-                        }
+                UiToAudio::SetSynthPattern(synth_id, p) => match synth_id {
+                    SynthId::A => {
+                        self.synth_a.pattern = p;
+                        self.synth_a.note_end_step = None;
                     }
-                }
+                    SynthId::B => {
+                        self.synth_b.pattern = p;
+                        self.synth_b.note_end_step = None;
+                    }
+                },
                 UiToAudio::SetEffectParams(ep) => {
                     self.effect_params = ep;
                     self.drum_reverb
                         .set_params(ep.reverb_amount, ep.reverb_damping);
                     self.drum_delay.set_single_knob(
-                        ep.delay_time, self.transport.bpm, self.sample_rate,
+                        ep.delay_time,
+                        self.transport.bpm,
+                        self.sample_rate,
                     );
                     self.compressor
                         .set_amount(ep.compressor_amount, self.sample_rate);
@@ -240,10 +261,14 @@ impl AudioEngine {
                     self.synth_a.saturator.set_drive(ep.synth_saturator_drive);
                     self.synth_b.saturator.set_drive(ep.synth_saturator_drive);
                     self.synth_a.delay.set_single_knob(
-                        ep.delay_time, self.transport.bpm, self.sample_rate,
+                        ep.delay_time,
+                        self.transport.bpm,
+                        self.sample_rate,
                     );
                     self.synth_b.delay.set_single_knob(
-                        ep.delay_time, self.transport.bpm, self.sample_rate,
+                        ep.delay_time,
+                        self.transport.bpm,
+                        self.sample_rate,
                     );
                 }
                 UiToAudio::TriggerDrum(track_id) => {
@@ -261,7 +286,8 @@ impl AudioEngine {
                     };
                     inst.voice.trigger(&inst.pattern.params, note);
                     // Gate for ~half a step (will be released when gate runs out)
-                    let samples_per_step = (self.sample_rate * 60.0 / self.transport.bpm / 4.0) as u32;
+                    let samples_per_step =
+                        (self.sample_rate * 60.0 / self.transport.bpm / 4.0) as u32;
                     inst.gate_samples = samples_per_step * 3 / 4;
                 }
             }
@@ -295,11 +321,10 @@ impl AudioEngine {
         for frame in buffer.chunks_mut(2) {
             // Advance clock if playing
             if self.transport.state == PlayState::Playing {
-                if let Some(event) = self.clock.advance(
-                    self.transport.bpm,
-                    self.sample_rate,
-                    self.transport.swing,
-                ) {
+                if let Some(event) =
+                    self.clock
+                        .advance(self.transport.bpm, self.sample_rate, self.transport.swing)
+                {
                     // Map free-running global_step into per-instrument pattern positions
                     let drum_step = event.global_step % drum_loop_len.max(1);
                     let synth_a_step = event.global_step % synth_a_loop_len.max(1);
@@ -318,19 +343,23 @@ impl AudioEngine {
                                 // Hihat choke: closed hihat chokes open hihat
                                 if track == DrumTrackId::ClosedHiHat as usize {
                                     self.drum_voices[DrumTrackId::OpenHiHat as usize].choke();
+                                    // OHH = 3
                                 }
                             }
                         }
                     }
 
-                    let samples_per_step = (self.sample_rate * 60.0 / self.transport.bpm / 4.0) as u32;
+                    let samples_per_step =
+                        (self.sample_rate * 60.0 / self.transport.bpm / 4.0) as u32;
 
                     // --- Synth A: trigger voice for active steps (with multi-step note length) ---
                     let mut synth_a_triggered = false;
                     {
                         let step_data = &self.synth_a.pattern.steps[synth_a_step];
                         if step_data.is_active() && !self.synth_a.pattern.params.mute {
-                            self.synth_a.voice.trigger(&self.synth_a.pattern.params, step_data.note);
+                            self.synth_a
+                                .voice
+                                .trigger(&self.synth_a.pattern.params, step_data.note);
                             synth_a_triggered = true;
 
                             let length = (step_data.length as usize).max(1);
@@ -338,12 +367,15 @@ impl AudioEngine {
                                 self.synth_a.gate_samples = samples_per_step * 3 / 4;
                                 self.synth_a.note_end_step = None;
                             } else {
-                                let end_step = (synth_a_step + length - 1).min(synth_a_loop_len.max(1) - 1);
-                                self.synth_a.gate_samples = samples_per_step * length as u32 - samples_per_step / 4;
+                                let end_step =
+                                    (synth_a_step + length - 1).min(synth_a_loop_len.max(1) - 1);
+                                self.synth_a.gate_samples =
+                                    samples_per_step * length as u32 - samples_per_step / 4;
                                 self.synth_a.note_end_step = Some(end_step);
                             }
                         } else if let Some(end) = self.synth_a.note_end_step {
-                            if synth_a_step == end {
+                            let loop_wrapped = synth_a_step > (end + 1) % synth_a_loop_len.max(1);
+                            if synth_a_step == end || loop_wrapped {
                                 self.synth_a.gate_samples = samples_per_step * 3 / 4;
                                 self.synth_a.note_end_step = None;
                             }
@@ -358,7 +390,9 @@ impl AudioEngine {
                     {
                         let step_data = &self.synth_b.pattern.steps[synth_b_step];
                         if step_data.is_active() && !self.synth_b.pattern.params.mute {
-                            self.synth_b.voice.trigger(&self.synth_b.pattern.params, step_data.note);
+                            self.synth_b
+                                .voice
+                                .trigger(&self.synth_b.pattern.params, step_data.note);
                             synth_b_triggered = true;
 
                             let length = (step_data.length as usize).max(1);
@@ -366,12 +400,15 @@ impl AudioEngine {
                                 self.synth_b.gate_samples = samples_per_step * 3 / 4;
                                 self.synth_b.note_end_step = None;
                             } else {
-                                let end_step = (synth_b_step + length - 1).min(synth_b_loop_len.max(1) - 1);
-                                self.synth_b.gate_samples = samples_per_step * length as u32 - samples_per_step / 4;
+                                let end_step =
+                                    (synth_b_step + length - 1).min(synth_b_loop_len.max(1) - 1);
+                                self.synth_b.gate_samples =
+                                    samples_per_step * length as u32 - samples_per_step / 4;
                                 self.synth_b.note_end_step = Some(end_step);
                             }
                         } else if let Some(end) = self.synth_b.note_end_step {
-                            if synth_b_step == end {
+                            let loop_wrapped = synth_b_step > (end + 1) % synth_b_loop_len.max(1);
+                            if synth_b_step == end || loop_wrapped {
                                 self.synth_b.gate_samples = samples_per_step * 3 / 4;
                                 self.synth_b.note_end_step = None;
                             }
@@ -442,7 +479,11 @@ impl AudioEngine {
             let mono_scaled = drum_dry_mono * drum_vol;
             let drum_sat_mono = self.drum_saturator.tick(mono_scaled);
             // Preserve stereo balance: apply saturator's gain change to both channels
-            let sat_gain = if mono_scaled.abs() > 1e-10 { drum_sat_mono / mono_scaled } else { 1.0 };
+            let sat_gain = if mono_scaled.abs() > 1e-10 {
+                drum_sat_mono / mono_scaled
+            } else {
+                1.0
+            };
             let drum_sat_l = drum_dry_l * drum_vol * sat_gain;
             let drum_sat_r = drum_dry_r * drum_vol * sat_gain;
             reverb_send *= drum_vol;
@@ -491,8 +532,14 @@ impl AudioEngine {
                     // Synth uses its own reverb/delay instances — don't also feed drum bus
                 }
                 let sa_sat = self.synth_a.saturator.tick(synth_dry);
-                let sa_reverb = self.synth_a.reverb.tick(sa_sat * self.synth_a.pattern.params.send_reverb);
-                let sa_delay = self.synth_a.delay.tick(sa_sat * self.synth_a.pattern.params.send_delay);
+                let sa_reverb = self
+                    .synth_a
+                    .reverb
+                    .tick(sa_sat * self.synth_a.pattern.params.send_reverb);
+                let sa_delay = self
+                    .synth_a
+                    .delay
+                    .tick(sa_sat * self.synth_a.pattern.params.send_delay);
                 sa_sat + sa_reverb + sa_delay
             };
 
@@ -539,8 +586,14 @@ impl AudioEngine {
                     // Synth uses its own reverb/delay instances — don't also feed drum bus
                 }
                 let sb_sat = self.synth_b.saturator.tick(synth_dry);
-                let sb_reverb = self.synth_b.reverb.tick(sb_sat * self.synth_b.pattern.params.send_reverb);
-                let sb_delay = self.synth_b.delay.tick(sb_sat * self.synth_b.pattern.params.send_delay);
+                let sb_reverb = self
+                    .synth_b
+                    .reverb
+                    .tick(sb_sat * self.synth_b.pattern.params.send_reverb);
+                let sb_delay = self
+                    .synth_b
+                    .delay
+                    .tick(sb_sat * self.synth_b.pattern.params.send_delay);
                 sb_sat + sb_reverb + sb_delay
             };
 
@@ -551,7 +604,8 @@ impl AudioEngine {
             // Sidechain: kick ducks synths for separation (depth from effect params)
             self.sidechain.tick(kick_sample);
             let duck = if self.effect_params.sidechain_amount > 0.001 {
-                self.sidechain.duck_gain(self.effect_params.sidechain_amount)
+                self.sidechain
+                    .duck_gain(self.effect_params.sidechain_amount)
             } else {
                 1.0
             };
@@ -560,7 +614,9 @@ impl AudioEngine {
             // Center (0.5) = both at ~0.707 (−3dB), extremes = one full / one silent.
             // Total power stays constant across the full range — no volume dip.
             let xf = self.crossfader;
-            let angle = xf * std::f32::consts::FRAC_PI_2;
+            // Constant-power crossfader: A uses cos(θ), B uses sin(θ) where θ = π/2 - x·π/2
+            // At center (0.5): both gain ≈0.707 (−3dB), extremes: one full/one silent
+            let angle = std::f32::consts::FRAC_PI_2 - xf * std::f32::consts::FRAC_PI_2;
             let gain_a = angle.cos();
             let gain_b = angle.sin();
 
@@ -581,20 +637,31 @@ impl AudioEngine {
             // Linked stereo compression with parallel "crush" bus
             let mono = (mixed_l + mixed_r) * 0.5;
             let compressed = self.compressor.tick(mono);
-            let comp_gain = if mono.abs() > 1e-10 { compressed / mono } else { 1.0 };
+            let comp_gain = if mono.abs() > 1e-10 {
+                compressed / mono
+            } else {
+                1.0
+            };
 
             // Parallel "crush" compression: only active when compressor knob is engaged.
             // Adds body and sustain without killing transients (New York compression)
             let crush = self.crush_compressor.tick(mono);
-            let crush_blend = if self.effect_params.compressor_amount > 0.001 { 0.3 } else { 0.0 };
-            let crush_gain = if mono.abs() > 1e-10 { crush / mono } else { 1.0 };
+            let crush_blend = if self.effect_params.compressor_amount > 0.001 {
+                0.3
+            } else {
+                0.0
+            };
+            let crush_gain = if mono.abs() > 1e-10 {
+                crush / mono
+            } else {
+                1.0
+            };
             let parallel_gain = comp_gain + crush_gain * crush_blend;
 
             // Lookahead limiter replaces crude tanh soft_clip — preserves transients
-            let (out_l, out_r) = self.limiter.tick_stereo(
-                mixed_l * parallel_gain,
-                mixed_r * parallel_gain,
-            );
+            let (out_l, out_r) = self
+                .limiter
+                .tick_stereo(mixed_l * parallel_gain, mixed_r * parallel_gain);
 
             frame[0] = out_l;
             if frame.len() > 1 {
@@ -616,5 +683,44 @@ impl AudioEngine {
         let buffer_frames = buffer.len() as f64 / 2.0;
         let decay = (-buffer_frames / (0.06 * self.sample_rate)).exp() as f32;
         self.peak_tracker *= decay;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lfo_independence() {
+        // LFO1 and LFO2 must produce independent outputs
+        let sample_rate = 48000.0;
+        let mut lfo1 = Lfo::new();
+        let mut lfo2 = Lfo::new();
+
+        let _v1 = lfo1.tick(sample_rate, 120.0, 1.0, 0); // Sine
+        let _v2 = lfo2.tick(sample_rate, 120.0, 1.0, 1); // Triangle
+
+        // Different waveforms should produce different outputs
+        let v1 = lfo1.tick(sample_rate, 120.0, 1.0, 0);
+        let v2 = lfo2.tick(sample_rate, 120.0, 1.0, 1);
+        assert_ne!(
+            v1, v2,
+            "LFO1 and LFO2 should differ with different waveforms"
+        );
+    }
+
+    #[test]
+    fn test_sidechain_tick() {
+        let sample_rate = 48000.0;
+        let mut env = SidechainEnvelope::new(sample_rate);
+
+        // Feed several loud samples to build envelope
+        for _ in 0..100 {
+            env.tick(0.9);
+        }
+
+        // Sidechain should now have level (use duck_gain as proxy)
+        let duck = env.duck_gain(0.5);
+        assert!(duck < 0.9, "Sidechain should detect kick, got {}", duck);
     }
 }
