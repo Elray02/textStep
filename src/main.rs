@@ -21,6 +21,18 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+/// Redirect all log output to `~/.local/share/textstep/textstep.log` so that
+/// runtime diagnostics never corrupt the TUI display.  Errors are silently
+/// swallowed if the file cannot be created (e.g. read-only FS).
+fn init_logger() {
+    use simplelog::{Config, LevelFilter, WriteLogger};
+    let log_dir = sequencer::project::data_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+    if let Ok(file) = std::fs::File::create(log_dir.join("textstep.log")) {
+        let _ = WriteLogger::init(LevelFilter::Warn, Config::default(), file);
+    }
+}
+
 /// Sets up cross-thread channels, starts the audio stream, initializes the
 /// terminal, and enters the main UI loop. The audio stream is kept alive
 /// until this function returns.
@@ -31,6 +43,8 @@ fn main() -> io::Result<()> {
         println!("textstep {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+
+    init_logger();
 
     // Create channels for UI <-> Audio communication
     let (tx_to_audio, rx_from_ui) = crossbeam_channel::bounded(64);
@@ -43,7 +57,7 @@ fn main() -> io::Result<()> {
     let _stream = match audio::start_audio_stream(rx_from_ui, tx_to_ui, Arc::clone(&display_buf)) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Audio error: {e}");
+            log::error!("Audio error: {e}");
             return Ok(());
         }
     };
