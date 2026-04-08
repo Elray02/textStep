@@ -186,8 +186,7 @@ impl ReverbEffect {
             let delayed = self.comb_buf[base + pos];
 
             // Damped feedback: one-pole LP on the delayed signal
-            self.comb_state[i] =
-                delayed * (1.0 - self.damping) + self.comb_state[i] * self.damping;
+            self.comb_state[i] = delayed * (1.0 - self.damping) + self.comb_state[i] * self.damping;
 
             self.comb_buf[base + pos] = input + self.comb_state[i] * self.feedback;
             self.comb_pos[i] = (pos + 1) % len;
@@ -226,30 +225,30 @@ const DELAY_BUF_SIZE: usize = 131072; // ~2.7s at 48kHz
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum DelaySub {
-    Sixteenth,         // 1/16
-    SixteenthDotted,   // 1/16D
-    EighthTriplet,     // 1/8T
-    Eighth,            // 1/8
-    EighthDotted,      // 1/8D
-    QuarterTriplet,    // 1/4T
-    Quarter,           // 1/4
-    QuarterDotted,     // 1/4D
-    HalfTriplet,       // 1/2T
-    Half,              // 1/2
-    Whole,             // 2/1 (two beats = half bar)
+    Sixteenth,       // 1/16
+    SixteenthDotted, // 1/16D
+    EighthTriplet,   // 1/8T
+    Eighth,          // 1/8
+    EighthDotted,    // 1/8D
+    QuarterTriplet,  // 1/4T
+    Quarter,         // 1/4
+    QuarterDotted,   // 1/4D
+    HalfTriplet,     // 1/2T
+    Half,            // 1/2
+    Whole,           // 2/1 (two beats = half bar)
 }
 
 /// Musical divisions: straight + dotted for polyrhythmic interest.
 pub const DELAY_SUBS: [DelaySub; 9] = [
-    DelaySub::Sixteenth,        // 0.00-0.11  — tight slapback
-    DelaySub::SixteenthDotted,  // 0.11-0.22  — dotted 1/16 bounce
-    DelaySub::Eighth,           // 0.22-0.33  — straight 1/8
-    DelaySub::EighthDotted,     // 0.33-0.44  — dotted 1/8 (classic!)
-    DelaySub::Quarter,          // 0.44-0.55  — straight 1/4
-    DelaySub::QuarterDotted,    // 0.55-0.66  — dotted 1/4
-    DelaySub::Half,             // 0.66-0.77  — spacious 1/2
-    DelaySub::Whole,            // 0.77-0.88  — full bar echo
-    DelaySub::Whole,            // 0.88-1.00  — full bar + high feedback (infinite)
+    DelaySub::Sixteenth,       // 0.00-0.11  — tight slapback
+    DelaySub::SixteenthDotted, // 0.11-0.22  — dotted 1/16 bounce
+    DelaySub::Eighth,          // 0.22-0.33  — straight 1/8
+    DelaySub::EighthDotted,    // 0.33-0.44  — dotted 1/8 (classic!)
+    DelaySub::Quarter,         // 0.44-0.55  — straight 1/4
+    DelaySub::QuarterDotted,   // 0.55-0.66  — dotted 1/4
+    DelaySub::Half,            // 0.66-0.77  — spacious 1/2
+    DelaySub::Whole,           // 0.77-0.88  — full bar echo
+    DelaySub::Whole,           // 0.88-1.00  — full bar + high feedback (infinite)
 ];
 
 impl DelaySub {
@@ -263,17 +262,17 @@ impl DelaySub {
     pub fn seconds(&self, bpm: f64) -> f64 {
         let beat = 60.0 / bpm; // quarter note duration
         match self {
-            DelaySub::Sixteenth =>       beat * 0.25,
+            DelaySub::Sixteenth => beat * 0.25,
             DelaySub::SixteenthDotted => beat * 0.375,
-            DelaySub::EighthTriplet =>   beat * 1.0 / 3.0,
-            DelaySub::Eighth =>          beat * 0.5,
-            DelaySub::EighthDotted =>    beat * 0.75,
-            DelaySub::QuarterTriplet =>  beat * 2.0 / 3.0,
-            DelaySub::Quarter =>         beat,
-            DelaySub::QuarterDotted =>   beat * 1.5,
-            DelaySub::HalfTriplet =>     beat * 4.0 / 3.0,
-            DelaySub::Half =>            beat * 2.0,
-            DelaySub::Whole =>           beat * 4.0,
+            DelaySub::EighthTriplet => beat * 1.0 / 3.0,
+            DelaySub::Eighth => beat * 0.5,
+            DelaySub::EighthDotted => beat * 0.75,
+            DelaySub::QuarterTriplet => beat * 2.0 / 3.0,
+            DelaySub::Quarter => beat,
+            DelaySub::QuarterDotted => beat * 1.5,
+            DelaySub::HalfTriplet => beat * 4.0 / 3.0,
+            DelaySub::Half => beat * 2.0,
+            DelaySub::Whole => beat * 4.0,
         }
     }
 
@@ -281,17 +280,17 @@ impl DelaySub {
     #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
-            DelaySub::Sixteenth =>       "1/16",
+            DelaySub::Sixteenth => "1/16",
             DelaySub::SixteenthDotted => "1/16D",
-            DelaySub::EighthTriplet =>   "1/8T",
-            DelaySub::Eighth =>          "1/8",
-            DelaySub::EighthDotted =>    "1/8D",
-            DelaySub::QuarterTriplet =>  "1/4T",
-            DelaySub::Quarter =>         "1/4",
-            DelaySub::QuarterDotted =>   "1/4D",
-            DelaySub::HalfTriplet =>     "1/2T",
-            DelaySub::Half =>            "1/2",
-            DelaySub::Whole =>           "2/1",
+            DelaySub::EighthTriplet => "1/8T",
+            DelaySub::Eighth => "1/8",
+            DelaySub::EighthDotted => "1/8D",
+            DelaySub::QuarterTriplet => "1/4T",
+            DelaySub::Quarter => "1/4",
+            DelaySub::QuarterDotted => "1/4D",
+            DelaySub::HalfTriplet => "1/2T",
+            DelaySub::Half => "1/2",
+            DelaySub::Whole => "2/1",
         }
     }
 }
@@ -343,7 +342,9 @@ impl DelayEffect {
     pub fn set_params(&mut self, time: f32, feedback: f32, tone: f32, bpm: f64, sample_rate: f64) {
         let sub = DelaySub::from_param(time);
         let delay_sec = sub.seconds(bpm);
-        self.delay_samples = ((delay_sec * sample_rate) as usize).min(DELAY_BUF_SIZE - 1).max(1);
+        self.delay_samples = ((delay_sec * sample_rate) as usize)
+            .min(DELAY_BUF_SIZE - 1)
+            .max(1);
         self.feedback = feedback.min(0.80);
         self.wet = 0.45;
 
@@ -369,7 +370,9 @@ impl DelayEffect {
         // amount near 0 → shortest subdivision (1/16), not silence
         let sub = DelaySub::from_param(amount.max(0.01));
         let delay_sec = sub.seconds(bpm);
-        self.delay_samples = ((delay_sec * sample_rate) as usize).min(DELAY_BUF_SIZE - 1).max(1);
+        self.delay_samples = ((delay_sec * sample_rate) as usize)
+            .min(DELAY_BUF_SIZE - 1)
+            .max(1);
 
         // Feedback: 0.30 (slapback) → 0.65 (spacious), last zone pushes to 0.95 (infinite)
         self.feedback = if amount > 0.88 {
@@ -711,7 +714,7 @@ fn linear_to_db(linear: f32) -> f32 {
 /// Much denser and richer than Schroeder: Householder feedback matrix preserves energy,
 /// prime-length delays prevent flutter echoes, per-line damping controls brightness.
 pub struct FdnReverb {
-    delays: Vec<f32>,       // single flat buffer for all 8 delay lines
+    delays: Vec<f32>, // single flat buffer for all 8 delay lines
     lengths: [usize; 8],
     offsets: [usize; 8],
     positions: [usize; 8],
@@ -803,7 +806,8 @@ impl FdnReverb {
             let pos = self.positions[i];
             let raw = self.delays[self.offsets[i] + pos];
             // One-pole LP damping
-            self.damping_state[i] = raw * (1.0 - self.damping) + self.damping_state[i] * self.damping;
+            self.damping_state[i] =
+                raw * (1.0 - self.damping) + self.damping_state[i] * self.damping;
             read_vals[i] = self.damping_state[i];
         }
 
@@ -848,7 +852,8 @@ impl FdnReverb {
         for i in 0..8 {
             let pos = self.positions[i];
             let raw = self.delays[self.offsets[i] + pos];
-            self.damping_state[i] = raw * (1.0 - self.damping) + self.damping_state[i] * self.damping;
+            self.damping_state[i] =
+                raw * (1.0 - self.damping) + self.damping_state[i] * self.damping;
             read_vals[i] = self.damping_state[i];
         }
 
@@ -870,7 +875,10 @@ impl FdnReverb {
         let er_l = er_sum * 0.6;
         let er_r = er_sum * 0.4;
 
-        (left * self.wet + er_l * self.er_wet, right * self.wet + er_r * self.er_wet)
+        (
+            left * self.wet + er_l * self.er_wet,
+            right * self.wet + er_r * self.er_wet,
+        )
     }
 }
 
@@ -918,8 +926,7 @@ pub struct LookaheadLimiter {
     gain: f32,
     attack_coeff: f32,
     release_coeff: f32,
-    running_peak: f32,       // current known peak in the buffer
-    samples_since_scan: u32, // counts down; triggers full rescan when the peak sample exits
+    running_peak: f32, // current known peak in the buffer
 }
 
 impl LookaheadLimiter {
@@ -943,7 +950,6 @@ impl LookaheadLimiter {
             attack_coeff,
             release_coeff,
             running_peak: 0.0,
-            samples_since_scan: 0,
         }
     }
 
@@ -1074,9 +1080,18 @@ mod tests {
             max_delayed = max_delayed.max(out.abs());
         }
         eprintln!("delay test: max_before_tap={max_before:.4}, max_after_tap={max_delayed:.4}");
-        eprintln!("  delay_samples={}, feedback={}, wet={}", delay.delay_samples, delay.feedback, delay.wet);
-        assert!(max_before < 0.01, "should be silent before delay tap, got {max_before}");
-        assert!(max_delayed > 0.05, "should hear delayed output, got {max_delayed}");
+        eprintln!(
+            "  delay_samples={}, feedback={}, wet={}",
+            delay.delay_samples, delay.feedback, delay.wet
+        );
+        assert!(
+            max_before < 0.01,
+            "should be silent before delay tap, got {max_before}"
+        );
+        assert!(
+            max_delayed > 0.05,
+            "should hear delayed output, got {max_delayed}"
+        );
     }
 
     #[test]
@@ -1118,7 +1133,12 @@ mod tests {
         for _ in 0..2000 {
             out = comp.tick(loud);
         }
-        assert!(out < loud, "Compressed output {} should be less than input {}", out, loud);
+        assert!(
+            out < loud,
+            "Compressed output {} should be less than input {}",
+            out,
+            loud
+        );
         assert!(out > 0.0);
     }
 
@@ -1135,7 +1155,10 @@ mod tests {
                 break;
             }
         }
-        assert!(found_reflection, "Should hear early reflections within 20ms");
+        assert!(
+            found_reflection,
+            "Should hear early reflections within 20ms"
+        );
     }
 
     #[test]
@@ -1147,7 +1170,11 @@ mod tests {
         for _ in 0..48000 {
             last = reverb.tick(0.0);
         }
-        assert!(last.abs() < 0.1, "Reverb should decay after 1s, got {}", last);
+        assert!(
+            last.abs() < 0.1,
+            "Reverb should decay after 1s, got {}",
+            last
+        );
     }
 
     #[test]
@@ -1180,7 +1207,11 @@ mod tests {
         for _ in 0..48000 {
             last = reverb.tick(0.0);
         }
-        assert!(last.abs() < 0.1, "FDN reverb should decay after 1s, got {}", last);
+        assert!(
+            last.abs() < 0.1,
+            "FDN reverb should decay after 1s, got {}",
+            last
+        );
     }
 
     #[test]
@@ -1197,7 +1228,10 @@ mod tests {
                 break;
             }
         }
-        assert!(l_differs_r, "Stereo FDN should produce different L/R outputs");
+        assert!(
+            l_differs_r,
+            "Stereo FDN should produce different L/R outputs"
+        );
     }
 
     #[test]
@@ -1217,7 +1251,11 @@ mod tests {
             let (l, r) = limiter.tick_stereo(0.0, 0.0);
             max_out = max_out.max(l.abs()).max(r.abs());
         }
-        assert!(max_out < 1.0, "Limiter should prevent output > threshold, got {}", max_out);
+        assert!(
+            max_out < 1.0,
+            "Limiter should prevent output > threshold, got {}",
+            max_out
+        );
     }
 
     #[test]
@@ -1232,7 +1270,11 @@ mod tests {
         for _ in 0..100 {
             env.tick(0.8);
         }
-        assert!(env.level > 0.3, "Envelope should follow loud input, got {}", env.level);
+        assert!(
+            env.level > 0.3,
+            "Envelope should follow loud input, got {}",
+            env.level
+        );
         // Duck gain should reduce
         assert!(env.duck_gain(0.5) < 0.9);
     }
@@ -1246,5 +1288,4 @@ mod tests {
         // (slight latency artifact from interpolation — expected)
         assert!(out > 0.5 && out < 1.0);
     }
-
 }
