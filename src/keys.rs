@@ -84,6 +84,56 @@ fn send_synth(app: &App, synth_id: SynthId) {
     app.send_synth_pattern(synth_id);
 }
 
+/// Toggle a panel's visibility. If hiding the currently focused panel, bump focus.
+fn toggle_panel(
+    app: &mut App,
+    field: impl FnOnce(&mut crate::app::PanelVisibility) -> &mut bool,
+    _associated_focus: FocusSection,
+) {
+    let vis_ref = field(&mut app.ui.panel_vis);
+    *vis_ref = !*vis_ref;
+    // If we just hid the focused panel, move to next visible section
+    if !app.ui.focus.is_visible(&app.ui.panel_vis) {
+        app.ui.focus = app.ui.focus.next(&app.ui.panel_vis);
+    }
+}
+
+/// Jump focus to a section, auto-expanding its panel if collapsed.
+fn focus_section(
+    app: &mut App,
+    target: FocusSection,
+    panel_field: impl FnOnce(&mut crate::app::PanelVisibility) -> &mut bool,
+) {
+    // Auto-expand if collapsed
+    *panel_field(&mut app.ui.panel_vis) = true;
+    app.ui.focus = target;
+}
+
+/// Adjust volume for the currently focused section.
+fn adjust_section_volume(app: &mut App, delta: f32) {
+    match focused_synth(app.ui.focus) {
+        Some(SynthId::A) => {
+            app.synth_a_pattern.params.volume = (app.synth_a_pattern.params.volume + delta).clamp(0.0, 1.0);
+            app.send_synth_pattern(SynthId::A);
+            let pct = (app.synth_a_pattern.params.volume * 100.0).round() as u32;
+            app.show_status(format!("Synth A Vol: {}%", pct));
+        }
+        Some(SynthId::B) => {
+            app.synth_b_pattern.params.volume = (app.synth_b_pattern.params.volume + delta).clamp(0.0, 1.0);
+            app.send_synth_pattern(SynthId::B);
+            let pct = (app.synth_b_pattern.params.volume * 100.0).round() as u32;
+            app.show_status(format!("Synth B Vol: {}%", pct));
+        }
+        None => {
+            app.effect_params.drum_volume = (app.effect_params.drum_volume + delta).clamp(0.0, 1.0);
+            app.send_effect_params();
+            let pct = (app.effect_params.drum_volume * 100.0).round() as u32;
+            app.show_status(format!("Drum Vol: {}%", pct));
+        }
+    }
+    app.dirty = true;
+}
+
 /// Main key event handler — dispatches based on modal state first.
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     // Modal dialogs take priority
@@ -211,6 +261,69 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             return;
         }
 
+        // Individual panel visibility toggles (F3-F8)
+        KeyCode::F(3) => { toggle_panel(app, |v| &mut v.synth_a_knobs, FocusSection::SynthAControls); return; }
+        KeyCode::F(4) => { toggle_panel(app, |v| &mut v.synth_a_grid, FocusSection::SynthAGrid); return; }
+        KeyCode::F(5) => { toggle_panel(app, |v| &mut v.synth_b_knobs, FocusSection::SynthBControls); return; }
+        KeyCode::F(6) => { toggle_panel(app, |v| &mut v.synth_b_grid, FocusSection::SynthBGrid); return; }
+        KeyCode::F(7) => { toggle_panel(app, |v| &mut v.drum_grid, FocusSection::DrumGrid); return; }
+        KeyCode::F(8) => { toggle_panel(app, |v| &mut v.drum_knobs, FocusSection::Knobs); return; }
+
+        // Direct section focus (Alt+1 through Alt+7)
+        KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.ui.focus = FocusSection::Transport;
+            return;
+        }
+        KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
+            focus_section(app, FocusSection::SynthAControls, |v| &mut v.synth_a_knobs);
+            return;
+        }
+        KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+            focus_section(app, FocusSection::SynthAGrid, |v| &mut v.synth_a_grid);
+            return;
+        }
+        KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+            focus_section(app, FocusSection::SynthBControls, |v| &mut v.synth_b_knobs);
+            return;
+        }
+        KeyCode::Char('5') if key.modifiers.contains(KeyModifiers::ALT) => {
+            focus_section(app, FocusSection::SynthBGrid, |v| &mut v.synth_b_grid);
+            return;
+        }
+        KeyCode::Char('6') if key.modifiers.contains(KeyModifiers::ALT) => {
+            focus_section(app, FocusSection::DrumGrid, |v| &mut v.drum_grid);
+            return;
+        }
+        KeyCode::Char('7') if key.modifiers.contains(KeyModifiers::ALT) => {
+            focus_section(app, FocusSection::Knobs, |v| &mut v.drum_knobs);
+            return;
+        }
+
+        // Synth A/B mute toggles (Alt+A / Alt+B)
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.synth_a_pattern.params.mute = !app.synth_a_pattern.params.mute;
+            app.send_synth_pattern(SynthId::A);
+            let label = if app.synth_a_pattern.params.mute { "Muted" } else { "Unmuted" };
+            app.show_status(format!("Synth A: {}", label));
+            return;
+        }
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.synth_b_pattern.params.mute = !app.synth_b_pattern.params.mute;
+            app.send_synth_pattern(SynthId::B);
+            let label = if app.synth_b_pattern.params.mute { "Muted" } else { "Unmuted" };
+            app.show_status(format!("Synth B: {}", label));
+            return;
+        }
+
+        // Crossfader center reset (Alt+C)
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.effect_params.crossfader = 0.5;
+            app.send_effect_params();
+            app.dirty = true;
+            app.show_status("Crossfader: Center".to_string());
+            return;
+        }
+
         // Focus navigation
         KeyCode::Tab if !key.modifiers.contains(KeyModifiers::SHIFT) => {
             app.ui.focus = app.ui.focus.next(&app.ui.panel_vis);
@@ -294,6 +407,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             app.effect_params.crossfader = (app.effect_params.crossfader + PARAM_INCREMENT).clamp(0.0, 1.0);
             app.send_effect_params();
             app.dirty = true;
+            return;
+        }
+
+        // Per-section volume: 9 = down, 0 = up (focus-aware)
+        KeyCode::Char('9') => {
+            adjust_section_volume(app, -PARAM_INCREMENT);
+            return;
+        }
+        KeyCode::Char('0') => {
+            adjust_section_volume(app, PARAM_INCREMENT);
             return;
         }
 
@@ -829,7 +952,13 @@ fn handle_knobs(app: &mut App, key: KeyEvent) {
             app.ui.drum_cursor_track = app.ui.drum_ctrl_track;
         }
         KeyCode::Left => {
-            app.ui.drum_ctrl_field = app.ui.drum_ctrl_field.prev_knob();
+            if app.ui.drum_ctrl_field.knob_index() == Some(0) {
+                // At first knob — jump back to drum grid
+                app.ui.focus = FocusSection::DrumGrid;
+                app.ui.drum_cursor_step = MAX_STEPS - 1;
+            } else {
+                app.ui.drum_ctrl_field = app.ui.drum_ctrl_field.prev_knob();
+            }
         }
         KeyCode::Right => {
             app.ui.drum_ctrl_field = app.ui.drum_ctrl_field.next_knob();
@@ -1029,6 +1158,13 @@ fn handle_synth_controls(app: &mut App, key: KeyEvent, synth_id: SynthId) {
             let (r, c) = find_synth_field_pos(ui.ctrl_field);
             if c > 0 {
                 ui.ctrl_field = SYNTH_CTRL_ROWS[r][c - 1];
+            } else {
+                // At leftmost control — jump back to synth grid
+                let grid_focus = match synth_id {
+                    SynthId::A => FocusSection::SynthAGrid,
+                    SynthId::B => FocusSection::SynthBGrid,
+                };
+                app.ui.focus = grid_focus;
             }
         }
         KeyCode::Right => {
