@@ -93,20 +93,22 @@ pub fn render_synth_knobs(f: &mut Frame, area: Rect, app: &App, synth_id: SynthI
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if inner.height < 10 || inner.width < 40 {
+    if inner.height < 6 || inner.width < 40 {
         return;
     }
 
     let params = &pattern.params;
     let sel = ui.ctrl_field;
 
-    // Split inner into 3 row groups: OSC (8), ENV+FILT (8), AMP+LFO (remaining)
+    // Split inner into 3 row groups with proportional sizing so the panel
+    // adapts to whatever height the layout allocates (compact on small terminals).
+    // Weights 5:5:4 ensure AMP+LFO gets enough rows for LFO sections to render.
     let row_groups = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8), // Row group 1: OSC1 + OSC2
-            Constraint::Length(8), // Row group 2: ENV1 + ENV2 + FILT
-            Constraint::Min(7),   // Row group 3: AMP (left) + LFO (right)
+            Constraint::Fill(5), // Row group 1: OSC1 + OSC2
+            Constraint::Fill(5), // Row group 2: ENV1 + ENV2 + FILT
+            Constraint::Fill(4), // Row group 3: AMP (left) + LFO (right)
         ])
         .split(inner);
 
@@ -245,8 +247,8 @@ pub fn render_synth_knobs(f: &mut Frame, area: Rect, app: &App, synth_id: SynthI
         let lfo_rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // LFO1: header + value + label
-                Constraint::Min(3),   // LFO2: header + value + label
+                Constraint::Fill(1), // LFO1: header + value + label
+                Constraint::Fill(1), // LFO2: header + value + label
             ])
             .split(cols[1]);
 
@@ -605,7 +607,7 @@ fn render_lfo_row(
     focused: bool,
     is_lfo2: bool,
 ) {
-    if area.height < 2 || area.width < 16 {
+    if area.height < 1 || area.width < 16 {
         return;
     }
 

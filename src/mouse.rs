@@ -453,9 +453,9 @@ fn hit_test_synth_knobs(col: u16, row: u16, knobs_area: Rect) -> Option<SynthCon
     let row_groups = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),  // OSC1 + OSC2
-            Constraint::Length(8),  // ENV1 + ENV2 + FILT
-            Constraint::Min(7),    // AMP (left) + LFO1/LFO2 stacked (right)
+            Constraint::Fill(5),  // OSC1 + OSC2
+            Constraint::Fill(5),  // ENV1 + ENV2 + FILT
+            Constraint::Fill(4),  // AMP (left) + LFO1/LFO2 stacked (right)
         ])
         .split(inner);
 
@@ -582,8 +582,8 @@ fn hit_test_synth_knobs(col: u16, row: u16, knobs_area: Rect) -> Option<SynthCon
             let lfo_rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3), // LFO1
-                    Constraint::Min(3),   // LFO2
+                    Constraint::Fill(1), // LFO1
+                    Constraint::Fill(1), // LFO2
                 ])
                 .split(cols[1]);
 

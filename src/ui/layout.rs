@@ -17,8 +17,9 @@ pub const KNOBS_HEIGHT: u16 = 9;
 /// Alias used by the new dual-synth layout.
 pub const DRUM_KNOBS_HEIGHT: u16 = KNOBS_HEIGHT;
 
-/// Height of the synth knobs panel (OSC 8 + ENV/FILT 8 + AMP+LFO 7 + 2 border = 25).
-pub const SYNTH_KNOBS_HEIGHT: u16 = 25;
+/// Height of the synth knobs panel.
+/// Adaptive internal layout: bars shrink to fit. At 16 the panel fits in 45-row terminals.
+pub const SYNTH_KNOBS_HEIGHT: u16 = 16;
 
 /// Height of the synth step row (2 border + header + spacer + step row + spacer = 6).
 pub const SYNTH_GRID_HEIGHT: u16 = 6;
@@ -246,13 +247,13 @@ mod tests {
             drum_knobs: true,
             waveform: true,
         };
-        // Minimum needed: 7 + 30 + 6 + 30 + 6 + 11 + 9 + 11 + 1 = 111
-        let ly = compute_dual_layout(term(111), &vis);
+        // Minimum needed: 7 + 16 + 6 + 16 + 6 + 11 + 9 + 11 + 1 = 83
+        let ly = compute_dual_layout(term(83), &vis);
 
         // Transport and activity bar should be at expected positions
         assert_eq!(ly.transport.height, TRANSPORT_HEIGHT);
         assert_eq!(ly.activity_bar.height, ACTIVITY_BAR_HEIGHT);
-        assert_eq!(ly.activity_bar.y + ly.activity_bar.height, 111);
+        assert_eq!(ly.activity_bar.y + ly.activity_bar.height, 83);
 
         // All expanded rects should be non-empty
         assert!(ly.synth_a_knobs.height > 0);
