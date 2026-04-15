@@ -102,13 +102,13 @@ pub fn render_synth_knobs(f: &mut Frame, area: Rect, app: &App, synth_id: SynthI
 
     // Split inner into 3 row groups with proportional sizing so the panel
     // adapts to whatever height the layout allocates (compact on small terminals).
-    // Weights 5:5:4 ensure AMP+LFO gets enough rows for LFO sections to render.
+    // Weights 6:5:3 give OSC the most rows so Tune/PWM/Level sliders render fully.
     let row_groups = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Fill(5), // Row group 1: OSC1 + OSC2
+            Constraint::Fill(6), // Row group 1: OSC1 + OSC2  (largest — needs full bars)
             Constraint::Fill(5), // Row group 2: ENV1 + ENV2 + FILT
-            Constraint::Fill(4), // Row group 3: AMP (left) + LFO (right)
+            Constraint::Fill(3), // Row group 3: AMP (left) + LFO (right)
         ])
         .split(inner);
 
@@ -132,7 +132,7 @@ pub fn render_synth_knobs(f: &mut Frame, area: Rect, app: &App, synth_id: SynthI
         );
         render_slider_group(
             f,
-            Rect::new(cols[0].x, cols[0].y + 2, cols[0].width, 6),
+            Rect::new(cols[0].x, cols[0].y + 2, cols[0].width, cols[0].height.saturating_sub(2)),
             params,
             OSC1_SLIDERS,
             sel,
@@ -164,7 +164,7 @@ pub fn render_synth_knobs(f: &mut Frame, area: Rect, app: &App, synth_id: SynthI
         }
         render_slider_group(
             f,
-            Rect::new(cols[2].x, cols[2].y + 2, cols[2].width, 6),
+            Rect::new(cols[2].x, cols[2].y + 2, cols[2].width, cols[2].height.saturating_sub(2)),
             params,
             OSC2_SLIDERS,
             sel,

@@ -18,8 +18,8 @@ pub const KNOBS_HEIGHT: u16 = 9;
 pub const DRUM_KNOBS_HEIGHT: u16 = KNOBS_HEIGHT;
 
 /// Height of the synth knobs panel.
-/// Adaptive internal layout: bars shrink to fit. At 16 the panel fits in 45-row terminals.
-pub const SYNTH_KNOBS_HEIGHT: u16 = 16;
+/// Adaptive internal layout: bars shrink to fit. At 22 the OSC section gets full 5-bar sliders.
+pub const SYNTH_KNOBS_HEIGHT: u16 = 22;
 
 /// Height of the synth step row (2 border + header + spacer + step row + spacer = 6).
 pub const SYNTH_GRID_HEIGHT: u16 = 6;
@@ -247,13 +247,13 @@ mod tests {
             drum_knobs: true,
             waveform: true,
         };
-        // Minimum needed: 7 + 16 + 6 + 16 + 6 + 11 + 9 + 11 + 1 = 83
-        let ly = compute_dual_layout(term(83), &vis);
+        // Minimum needed: 7 + 22 + 6 + 22 + 6 + 11 + 9 + 11 + 1 = 95
+        let ly = compute_dual_layout(term(95), &vis);
 
         // Transport and activity bar should be at expected positions
         assert_eq!(ly.transport.height, TRANSPORT_HEIGHT);
         assert_eq!(ly.activity_bar.height, ACTIVITY_BAR_HEIGHT);
-        assert_eq!(ly.activity_bar.y + ly.activity_bar.height, 83);
+        assert_eq!(ly.activity_bar.y + ly.activity_bar.height, 95);
 
         // All expanded rects should be non-empty
         assert!(ly.synth_a_knobs.height > 0);
