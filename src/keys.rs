@@ -1251,6 +1251,18 @@ fn adjust_synth_field(app: &mut App, synth_id: SynthId, delta: f32) {
     }
     send_synth(app, synth_id);
     app.dirty = true;
+
+    // Show value in status bar so the user can confirm the change registered
+    let new_val = {
+        let p = match synth_id {
+            SynthId::A => &app.synth_a_pattern,
+            SynthId::B => &app.synth_b_pattern,
+        };
+        field.get(&p.params)
+    };
+    let synth_name = match synth_id { SynthId::A => "A", SynthId::B => "B" };
+    let pct = (new_val * 100.0).round() as i32;
+    app.show_status(format!("Synth{} {}: {}%", synth_name, field.full_label(), pct));
 }
 
 fn randomize_page_params(app: &mut App) {
