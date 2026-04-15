@@ -453,9 +453,9 @@ fn hit_test_synth_knobs(col: u16, row: u16, knobs_area: Rect) -> Option<SynthCon
     let row_groups = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Fill(5),  // OSC1 + OSC2
+            Constraint::Fill(6),  // OSC1 + OSC2
             Constraint::Fill(5),  // ENV1 + ENV2 + FILT
-            Constraint::Fill(4),  // AMP (left) + LFO1/LFO2 stacked (right)
+            Constraint::Fill(3),  // AMP (left) + LFO1/LFO2 stacked (right)
         ])
         .split(inner);
 
