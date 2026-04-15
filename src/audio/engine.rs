@@ -611,12 +611,11 @@ impl AudioEngine {
             };
 
             // Apply crossfader gain: constant-power (Octatrack-style) cosine curve.
-            // Center (0.5) = both at ~0.707 (−3dB), extremes = one full / one silent.
+            // xf=0 → only A, xf=0.5 → both at −3dB, xf=1 → only B.
             // Total power stays constant across the full range — no volume dip.
             let xf = self.crossfader;
-            // Constant-power crossfader: A uses cos(θ), B uses sin(θ) where θ = π/2 - x·π/2
-            // At center (0.5): both gain ≈0.707 (−3dB), extremes: one full/one silent
-            let angle = std::f32::consts::FRAC_PI_2 - xf * std::f32::consts::FRAC_PI_2;
+            // θ = xf·π/2: A uses cos(θ) (1→0 as xf goes 0→1), B uses sin(θ) (0→1)
+            let angle = xf * std::f32::consts::FRAC_PI_2;
             let gain_a = angle.cos();
             let gain_b = angle.sin();
 
